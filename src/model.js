@@ -252,6 +252,17 @@
           if (!same) add('warn', (s.name || 'A section') + ' can only ' + (q > 0 ? 'send its soil to' : 'receive soil from') + ' the other side of ' + nm + ', so it cannot start before ' + when + '.', mc(b.id + ':openDate'));
         });
       });
+    } else if (id === 'C4') {
+      const chk = (n, w, nm, cell) => {
+        if (!(Math.floor(+n) >= 1)) add('error', nm + ': the number of layers must be a whole number of at least 1.', cell('layers'));
+        if (!(+w >= 0)) add('error', nm + ': the waiting period cannot be negative.', cell('waitDays'));
+      };
+      chk(m.layers, m.waitDays, 'Layered fill', f => mc(f));
+      if (m.mode === 'bySection') scn.sections.forEach(s => {
+        const o = (m.bySection || {})[s.id]; if (!o || Engine.netQty(s) >= 0) return;
+        if (o.layers !== '' && o.layers !== undefined && !(Math.floor(+o.layers) >= 1)) add('error', (s.name || 'A section') + ': the number of layers must be at least 1, or left blank.', { sec: s.id, field: 'c4layers' });
+        if (o.waitDays !== '' && o.waitDays !== undefined && !(+o.waitDays >= 0)) add('error', (s.name || 'A section') + ': the waiting period cannot be negative, or leave it blank.', { sec: s.id, field: 'c4wait' });
+      });
     } else if (id === 'C3') {
       (m.periods || []).forEach((x, k) => {
         const nm = 'Closed period ' + (k + 1) + (x.note ? ' (' + x.note + ')' : '');

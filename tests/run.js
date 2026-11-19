@@ -104,6 +104,17 @@ function audit(name, scn) {
       for (const b of P.con.blocks) if (b.x > lo && b.x < hi && L.depart[k] + Math.round(Math.abs(b.x - P.mid[i]) / 1000 / P.speed * 60) < b.openAbs) bad++;
     }
     perDay[day] = (perDay[day] || 0) + 1;
+    if (P.con && P.con.layers && k === 0) { // layered fill (C4): no load straddles a layer, and a layer opens only after the wait since the previous layer's last tip
+      const LY = P.con.layers, st = {};
+      for (let q = 0; q < r.n; q++) {
+        const jj = L.dst[q]; if (jj >= P.n || LY.N[jj] <= 1) continue;
+        const size = -P.qty[jj] / LY.N[jj], s = st[jj] = st[jj] || { cum: 0, mt: [] };
+        const lay = Math.min(LY.N[jj] - 1, Math.floor((s.cum + 1e-6) / size)), end = Math.min(LY.N[jj] - 1, Math.floor((s.cum + L.t[q] - 1e-6) / size));
+        if (end !== lay) bad++;
+        if (lay > 0 && s.mt[lay - 1] !== undefined && L.tip[q] < s.mt[lay - 1] + LY.W[jj] * 1440 - 1e-9) bad++;
+        s.mt[lay] = Math.max(s.mt[lay] || 0, L.tip[q]); s.cum += L.t[q];
+      }
+    }
     (slotEvents[i] = slotEvents[i] || []).push([L.start[k], 1], [L.depart[k], -1]);
   }
   for (const d in perDay) if (perDay[d] > P.cap) bad++;
@@ -1075,6 +1086,39 @@ console.log('\n44. C1 ROUTE BLOCKAGES: nothing passes a blockage before its open
   ok(Model.validate(road(A(), [{ chainageM: 1000, openDate: '2027-01-13' }])).some(x => x.level === 'warn' && /can only send its soil to the other side of River crossing, so it cannot start before/.test(x.text)), 'conflict: a cut whose only fills are across the blockage is flagged with the date');
   const hashOf = q => crypto.createHash('sha1').update(JSON.stringify([q.log.src, q.log.dst, q.log.start, q.log.tip, q.log.t])).digest('hex').slice(0, 12);
   ok(hashOf(Engine.simulate(withMods(Model.exampleSimple(), { C1: true }, { C1: { blocks: [] } }))) === hashOf(Engine.simulate(Model.exampleSimple())), 'C1 with no blockages reproduces the core result');
+}
+
+console.log('\n45. C4 LAYERED FILL: a fill takes its soil in layers, each opening after a waiting period');
+{
+  const days = r => Array.from({ length: r.n }, (_, k) => Math.floor(r.log.start[k] / 1440)).join();
+  const c4 = (p, extra) => withMods(tiny(), Object.assign({ C4: true }, extra || {}), { C4: p });
+  // hand: 100 t in 2 layers of 50 t. Layer 1 takes loads of 20, 20 and 10 t (a load never straddles layers): starts 07:00, 07:10, 07:20, tips 07:22, 07:32, 07:42.
+  // Layer 2 opens 2 days after the last tip of layer 1 (Mon 07:42), i.e. Wednesday 07:42. Load 4 must arrive at or after that: it starts Wed 07:20 (leaves 07:30, arrives 07:42),
+  // then 07:30 and 07:40 for the last 20 and 10 t.
+  const r = audit('C4 two layers, 2 days wait', c4({ layers: 2, waitDays: 2 }));
+  ok(r.log.t.join() === '20,20,10,20,20,10', 'loads are split at the layer boundary: 20, 20, 10 then 20, 20, 10');
+  ok(days(r) === '0,0,0,2,2,2' && Array.from({ length: 3 }, (_, k) => hhmm(r.log.start[3 + k])).join() === '07:20,07:30,07:40' && hhmm(r.log.tip[5]) === '08:02', 'hand: layer 2 starts Wednesday 07:20, 07:30, 07:40 and the last tip is Wednesday 08:02');
+  const w0 = audit('C4 two layers, no wait', c4({ layers: 2, waitDays: 0 }));
+  ok(days(w0) === '0,0,0,0,0,0' && w0.log.t.join() === '20,20,10,20,20,10', 'with no waiting period layer 2 follows at once, all on Monday');
+  const core = Engine.simulate(tiny());
+  ok(core.n === 5 && w0.n === 6, 'direction: layering adds a short load per layer boundary (5 loads become 6)');
+  ok(r.summary.endTime > core.summary.endTime, 'direction: a waiting period makes the programme later');
+  const three = audit('C4 three layers, 1 day wait', c4({ layers: 3, waitDays: 1 }));
+  ok(three.summary.complete && Math.abs(three.summary.tonnesMoved - 100) < 1e-9, 'three layers: all 100 t placed');
+  // per-section values: only the fill b has layers
+  const bs = audit('C4 by section', c4({ layers: 1, waitDays: 0, mode: 'bySection', bySection: { b: { layers: 2, waitDays: 2 } } }));
+  ok(days(bs) === '0,0,0,2,2,2', 'vary by section: the fill’s own layers and wait apply (same as the site-wide case)');
+  // a layer wait longer than 14 days is not mistaken for a stuck job
+  const long = Engine.simulate(c4({ layers: 2, waitDays: 20 }));
+  ok(!long.summary.stuck && long.summary.complete, 'a 20-day waiting period: the job is not reported stuck');
+  // a layer wait is not "the fill is not open yet": no soil goes to a stockpile
+  const stk = c4({ layers: 2, waitDays: 2 }, { A5: true }); stk.modules.A5.stockpiles = [{ id: 'k1', name: 'Dump', chainageM: 1000, capacityT: 60, handleCostPerT: 2, lanes: 1 }];
+  ok(Engine.simulate(stk).msum.stockInT === 0, 'waiting for the next layer does not park soil in a stockpile');
+  // one layer is exactly the plain fill
+  const hashOf = q => crypto.createHash('sha1').update(JSON.stringify([q.log.src, q.log.dst, q.log.start, q.log.tip, q.log.t])).digest('hex').slice(0, 12);
+  ok(hashOf(Engine.simulate(withMods(Model.exampleSimple(), { C4: true }, { C4: { layers: 1, waitDays: 0 } }))) === hashOf(Engine.simulate(Model.exampleSimple())), 'one layer with no wait reproduces the core result');
+  ok(Model.validate(c4({ layers: 0, waitDays: 2 })).some(x => x.level === 'error' && /at least 1/.test(x.text) && x.cell.mod === 'C4'), 'zero layers is rejected in plain English');
+  ok(Model.validate(c4({ layers: 2, waitDays: -1 })).some(x => /cannot be negative/.test(x.text)), 'a negative waiting period is rejected');
 }
 
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');

@@ -105,7 +105,7 @@
   // ---------- site constraints (C1-C5) ----------
   // Built once in prepare. P.con exists only when some constraint is actually in force, so neutral settings run the untouched path.
   function applyConstraints(scn, P) {
-    const mods = (scn.setup && scn.setup.modules) || {}, md = scn.modules || {}, con = { closed: null, blocks: null, maxDay: 0 };
+    const mods = (scn.setup && scn.setup.modules) || {}, md = scn.modules || {}, con = { closed: null, blocks: null, layers: null, maxDay: 0 };
     const idx = {}; for (let i = 0; i < P.n; i++) idx[P.ids[i]] = i;
     if (mods.C3) { // closed periods per section (or all sections); 'to' blank = closed for good
       const closed = [];
@@ -127,7 +127,16 @@
       }
       if (blocks.length) con.blocks = blocks;
     }
-    P.con = con.closed || con.blocks ? con : null;
+    if (mods.C4) { // layered fill: a fill takes its quantity in N layers, each opening `waitDays` after the previous one is complete
+      const b = md.C4 || {}, N = new Int32Array(P.nn).fill(1), W = new Float64Array(P.nn); let any = false;
+      for (const j of P.dsts) {
+        let n = Math.floor(+b.layers) || 1, w = +b.waitDays || 0;
+        if (b.mode === 'bySection') { const o = (b.bySection || {})[P.ids[j]]; if (o) { if (o.layers !== '' && o.layers !== undefined) n = Math.floor(+o.layers) || 1; if (o.waitDays !== '' && o.waitDays !== undefined) w = +o.waitDays || 0; } }
+        N[j] = Math.max(1, n); W[j] = Math.max(0, w); if (N[j] > 1) any = true;
+      }
+      if (any) con.layers = { N, W };
+    }
+    P.con = con.closed || con.blocks || con.layers ? con : null;
   }
   function snapWin(w, t) { for (let k = 0; k < w.length; k++) if (t < w[k][1]) return t > w[k][0] ? t : w[k][0]; return Infinity; } // earliest allowed start at or after t, or Infinity
   function applyCalendar(scn, P) {
@@ -410,7 +419,10 @@
     // calendar (D4): days off for the whole site, shift windows with gaps
     const cal = P.cal, dayOff = cal ? cal.dayOff : null, winMulti = !!(cal && cal.multi);
     let idleWork = -1; // working days since the last movement (days off do not count), for stuck detection
-    const con = P.con, conClosed = !!(con && con.closed), conBlocks = con && con.blocks;
+    const con = P.con, conClosed = !!(con && con.closed), conBlocks = con && con.blocks, conLayers = con && con.layers;
+    // layered fill (C4): per fill, the tonnes left in the current layer, its opening time (absolute minutes) and the latest tip so far in it
+    const layN = conLayers ? conLayers.N : null, layRem = new Float64Array(conLayers ? nn : 0), layIdx = new Int32Array(conLayers ? nn : 0);
+    const layOpen = new Float64Array(conLayers ? nn : 0).fill(-Infinity), layMaxTip = new Float64Array(conLayers ? nn : 0), laySize = new Float64Array(conLayers ? nn : 0);
     // route blockages (C1): would a load leaving i for j (departing at departT on `day`) reach a blockage before it opens?
     // Returns the earliest loading start (relative to the day) that would pass every blockage, or null when it can go now.
     function blockWait(i, j, day, departT, ty, svc) {
@@ -436,6 +448,7 @@
       else if (P.qty[i] < 0) { freeNeed[i] = -P.qty[i]; totalFill += -P.qty[i]; }
     }
     for (const x of P.srcs) if (x >= n) remSrc[x] = P.qty[x]; // import budgets (A4): not part of the job's own cut
+    if (conLayers) for (const j of P.dsts) if (layN[j] > 1) { laySize[j] = freeNeed[j] / layN[j]; layRem[j] = laySize[j]; }
     const hasImp = P.srcs.some(x => x >= n), nodeMode = nn > n; // nodeMode: off-site gates or stockpiles exist (plain jobs never look at node kinds)
     const idx = {}; P.ids.forEach((id, i) => (idx[id] = i));
     const rank = new Float64Array(nn); for (let i = 0; i < nn; i++) rank[i] = i;
@@ -461,12 +474,13 @@
       for (let l = 0; l < dl.length; l++) if (nl[l] > EPS) { if (dl[l].req === m) return l; if (any < 0 && M.acc[dl[l].req][m]) any = l; }
       return any;
     }
-    const canTake = (j, m) => (M && M.a2 ? lineFor(j, m) >= 0 : freeNeed[j] > 0);
+    const canTake = (j, m) => (M && M.a2 ? lineFor(j, m) >= 0 : freeNeed[j] > 0) && !(conLayers && layN[j] > 1 && layRem[j] <= EPS);
     // tonnes of m that fill j can still take (A2: limited by the line it would go into, converted by occupied space)
     function takeCap(j, m) {
-      if (!(M && M.a2)) return freeNeed[j];
-      const l = lineFor(j, m), req = M.dstLines[j][l].req;
-      return req === m ? needLine[j][l] : needLine[j][l] * M.occ[req] / M.occ[m];
+      let c;
+      if (!(M && M.a2)) c = freeNeed[j];
+      else { const l = lineFor(j, m), req = M.dstLines[j][l].req; c = req === m ? needLine[j][l] : needLine[j][l] * M.occ[req] / M.occ[m]; }
+      return conLayers && layN[j] > 1 && layRem[j] < c ? layRem[j] : c; // a load never straddles two layers
     }
     // A4: daily tonnage used at each gate
     const nodeDay = new Int32Array(nn).fill(-1), nodeUsed = new Float64Array(nn), nodeTot = new Float64Array(nn);
@@ -582,12 +596,15 @@
           return -1;
         }
         if (conBlocks) { const bw = blockWait(i, j, day, departT, ty, svc); if (bw !== null) { if (bw < minWait) minWait = bw; cWait = true; return -1; } }
+        if (conLayers && layN[j] > 1 && layOpen[j] > day * DAY + departT + tr) { // the next layer is still in its waiting period
+          const w = layOpen[j] - day * DAY - tr - svc; if (w < minWait) minWait = w; cWait = true; return -1;
+        }
         if (conClosed) { // the fill is in a closed period on the day the load would arrive: it waits for the reopening day
           const re = closedUntil(j, day + Math.floor((departT + tr) / DAY));
           if (re) { if (re !== Infinity) { const w = (re - day) * DAY - tr - svc; if (w < minWait) minWait = w; cWait = true; } return -1; }
         }
         if (!recv) return 0;
-        const arr = day * DAY + departT + tr, ti = tipAt(j, arr, Math.min(capT, remSrc[i], M ? takeCap(j, mat) : freeNeed[j]));
+        const arr = day * DAY + departT + tr, ti = tipAt(j, arr, Math.min(capT, remSrc[i], takeCap(j, mat)));
         if (ti.ts - arr > recv.maxQ) { // queue too long: hold loading until it would be short enough
           const w = ti.mf - recv.maxQ - tr - svc - day * DAY;
           if (w < minWait) minWait = w;
@@ -738,7 +755,7 @@
           continue;
         }
         const j = pk.j, kJ = j >= n ? P.kind[j] : 0; // kJ: 2 export, 3 stockpile
-        let tonnes = j >= n ? Math.min(capT, remSrc[best], kJ === 2 ? nodeAvail(j, d) : stockSpace(j)) : Math.min(capT, remSrc[best], M ? takeCap(j, mat) : freeNeed[j]);
+        let tonnes = j >= n ? Math.min(capT, remSrc[best], kJ === 2 ? nodeAvail(j, d) : stockSpace(j)) : Math.min(capT, remSrc[best], takeCap(j, mat));
         let dLine = -1, consume = 0;
         if (pk.arc) tonnes = Math.min(tonnes, pk.arc.rem);
         const arrAbs = base + departT + tripL(P, ty, best, j);
@@ -769,6 +786,16 @@
         if (pk.arc) pk.arc.rem -= tonnes;
         if (remSrc[best] < EPS) { if (best < n) totalRem -= remSrc[best]; remSrc[best] = 0; }
         if (j < n && freeNeed[j] < EPS) freeNeed[j] = 0;
+        if (conLayers && j < n && layN[j] > 1 && layRem[j] > 0) {
+          layRem[j] -= consume; if (tipAbs > layMaxTip[j]) layMaxTip[j] = tipAbs;
+          if (layRem[j] < EPS) { // layer complete: the next opens after the waiting period, counted from the latest tip in this layer
+            layRem[j] = 0;
+            if (layIdx[j] < layN[j] - 1 && freeNeed[j] > 0) {
+              layIdx[j]++; layRem[j] = Math.min(laySize[j], freeNeed[j]); layOpen[j] = layMaxTip[j] + conLayers.W[j] * DAY; layMaxTip[j] = 0;
+              if (layOpen[j] / DAY + 1 > maxOpen) maxOpen = layOpen[j] / DAY + 1; // a job waiting for a layer is not stuck
+            }
+          }
+        }
         slots[best][bestSlot] = departT;
         let bs = base + bestT;
         if (fleetOn) {

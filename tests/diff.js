@@ -81,6 +81,7 @@ baseList.forEach(s => {
 const NEUTRAL = {
   C1: { blocks: [] },
   C3: { periods: [] },
+  C4: { layers: 1, waitDays: 0, mode: 'site', bySection: {} },
   D4: { shifts: [{ start: '00:00', end: '23:59' }], replace: false, weekendSat: false, weekendSun: false, holidaysOn: false }
 };
 const NEUTRAL_ON = Object.keys(NEUTRAL).reduce((o, k) => ((o[k] = true), o), {});
