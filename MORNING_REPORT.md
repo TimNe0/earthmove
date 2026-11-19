@@ -3,16 +3,17 @@
 STATUS: run in progress. This file is updated after every step, so it is valid even if the run is cut short.
 
 ## Green tags so far
-(none yet; last known good: `phase4-done`)
+- `step0-green`: compaction default 1.0, branch cleanup, dispatcher merge attempted and NOT adopted (see DECISIONS 3-4). Last known good before this run: `phase4-done`.
 
 ## Built
-(nothing yet)
+- A1 default compaction 1.0 (test 41).
+- `tests/perf.js`: speed harness for comparing an engine directory with `.baseline`.
 
 ## Skipped or reverted
-(nothing yet)
+- **Single merged dispatcher: not adopted.** Best variant +22% (12 sections) / +7-12% (100 sections) against a 10% gate, after three attempts. Two-dispatcher rule kept. Nothing needed reverting (experiments ran on scratch copies).
 
 ## Test results per step
-(none yet)
+- Step 0: tests/run.js all pass (289 checks), tests/diff.js 0 differences over 109 scenarios.
 
 ## Open items
 (none yet)
