@@ -1408,6 +1408,90 @@ console.log('\n54. E1 COST AND E2 CARBON: from plant hours, fuel, labour and off
   ok(Model.validate(ce({ E1: true }, { E1: { basis: 'standing' } })).some(x => x.level === 'warn' && /no fixed fleet/.test(x.text)), 'standing hire with no fixed fleet is flagged');
 }
 
+console.log('\n55. E4 PROGRAMME EXPORT: section start and finish dates as CSV for P6 or MS Project');
+{
+  const lines = csv => csv.split('\r\n').filter(Boolean);
+  const sc = tiny(); sc.settings.maxMovesPerDay = 3; const e4 = withMods(sc, { E4: true }, { E4: { dateFormat: 'uk', idPrefix: 'EW' } }), r = Engine.simulate(e4);
+  // hand: cap 3 a day. Cut: first load Mon 11/01, last load leaves Tue 12/01 (2 days). Fill: first tip Mon, last tip Tue (2 days). Both 100%.
+  const csv = Model.programmeCSV(e4, r), L = lines(csv);
+  ok(L[0] === 'Activity ID,Activity Name,Original Duration (days),Start,Finish,Percent Complete,Type,Quantity (t)', 'the header names the P6 and MS Project columns');
+  ok(L[1] === 'EW001,Cut,2,11/01/2027,12/01/2027,100,Cut,100' && L[2] === 'EW002,Fill,2,11/01/2027,12/01/2027,100,Fill,100', 'hand: Cut Mon 11/01 to Tue 12/01 (2 days), Fill the same, both 100%');
+  const iso = withMods(sc, { E4: true }, { E4: { dateFormat: 'iso', idPrefix: 'RD' } });
+  ok(lines(Model.programmeCSV(iso, Engine.simulate(iso)))[1] === 'RD001,Cut,2,2027-01-11,2027-01-12,100,Cut,100', 'ISO dates and a custom activity prefix');
+  // a section that does not finish has no finish date and a partial percentage
+  const perm = withMods(sc, { E4: true, C3: true }, { E4: { dateFormat: 'uk', idPrefix: 'EW' }, C3: { periods: [{ id: 'p0', sec: 'b', from: '2027-01-12', to: '' }] } }); // (withMods changes the scenario it is given, so the E4 options are restated)
+  const pl = lines(Model.programmeCSV(perm, Engine.simulate(perm)));
+  ok(pl[1] === 'EW001,Cut,1,11/01/2027,,60,Cut,100' && pl[2] === 'EW002,Fill,1,11/01/2027,,60,Fill,100', 'unfinished sections: start date, no finish date, 60% complete (60 of 100 t moved)');
+  // names with commas are quoted; sections with no soil are left out
+  const odd = tiny(); odd.sections[0].name = 'Cut, north'; const extra = Model.newSection(2); extra.id = 'z'; extra.name = 'Through'; odd.sections.push(extra);
+  const oc = lines(Model.programmeCSV(withMods(Model.normalise(odd), { E4: true }), Engine.simulate(withMods(Model.normalise(odd), { E4: true }))));
+  ok(oc[1].startsWith('EW001,"Cut, north",') && oc.length === 3, 'a name with a comma is quoted, and a section with no soil gets no row');
+  const ex = withMods(Model.exampleSimple(), { E4: true }), er = Engine.simulate(ex), el = lines(Model.programmeCSV(ex, er));
+  ok(el.length === 12 && el.slice(1).every(l => l.split(',').length === 8), 'the 12-section example gives 11 rows (S8 has no soil), each with 8 columns');
+  ok(Model.validate(withMods(sc, { E4: true }, { E4: { dateFormat: 'us' } })).some(x => x.level === 'error' && /date format must be UK/.test(x.text)), 'an unknown date format is rejected in plain English');
+}
+
+console.log('\n56. E5 IMPORT: section table from CSV or pasted spreadsheet cells, with a template');
+{
+  // every field of the 12-section example survives export then import
+  const ex = Model.exampleSimple(), p = Model.parseSections(Model.sectionsCSV(ex), ex);
+  ok(p.errors.length === 0 && p.sections.length === 12, 'the 12-section example exports and imports with no problems');
+  const same = ex.sections.every((s, i) => { const q = p.sections[i]; return q.name === s.name && q.lengthM === s.lengthM && Model.secQty(q) === Model.secQty(s) && q.workStart === s.workStart && q.workEnd === s.workEnd && (q.openFrom || '') === (s.openFrom || '') && q.maxLoaders === s.maxLoaders && q.workDays.join() === s.workDays.join(); });
+  ok(same, 'name, length, quantity, hours, opening date, loaders and working days all round-trip exactly');
+  // a messy paste from a spreadsheet: tabs, different column names, thousands separators, short dates, a 6-day week
+  const paste = 'Section\tLength\tQuantity\tStart\tEnd\tOpens\tLoaders\tDays\nCutting A\t500\t1,200\t6:30\t18:00\t8/3/27\t2\tMon-Sat\nFill B\t800\t-1,200\t07:00\t19:00\t\t\tMon,Tue,Wed';
+  const q = Model.parseSections(paste, ex);
+  ok(q.errors.length === 0 && q.sections.length === 2 && q.sections[0].lengthM === 500 && Model.secQty(q.sections[0]) === 1200 && q.sections[0].workStart === '06:30' && q.sections[0].openFrom === '2027-03-08' && q.sections[0].workDays.join() === '1,1,1,1,1,1,0', 'spreadsheet paste: tabs, aliases, 1,200, 6:30, 8/3/27 and Mon-Sat are all understood');
+  ok(q.sections[1].workDays.join() === '1,1,1,0,0,0,0' && q.sections[1].maxLoaders === 2, 'working days listed by name; a blank loaders cell keeps the default');
+  // semicolon files and quoted names
+  const sc = Model.parseSections('Name;Length (m);Soil quantity\n"Cut ""A"", north";500;100\nFill;500;-100', ex);
+  ok(sc.errors.length === 0 && sc.sections[0].name === 'Cut "A", north' && sc.sections.length === 2, 'semicolon-separated files and quoted names with commas and quotes');
+  // no header row: columns in template order
+  const nh = Model.parseSections('Cut,600,5000,07:00,19:00,,2,Mon-Fri\nFill,600,-5000', ex);
+  ok(nh.errors.length === 0 && nh.sections.length === 2 && Model.secQty(nh.sections[1]) === -5000, 'no header row: the template column order is assumed');
+  // every kind of mistake gets a plain-English message with its row
+  const bad = Model.parseSections('Name,Length,Quantity,Start,End,Opens,Loaders,Days\nA,abc,100,,,,,\nB,500,lots,,,,,\nC,500,100,25:00,,,,\nD,500,100,,,32/13/2027,,\nE,500,100,,,,0,\nF,500,100,,,,,Funday\nOK,500,100,,,,,', ex), tx = bad.errors.map(e => e.text).join(' | ');
+  ok(bad.sections.length === 1 && bad.sections[0].name === 'OK' && bad.errors.length === 6, 'six bad rows are rejected, the good row is kept');
+  ok(/Row 2: the length "abc" is not a number above 0/.test(tx) && /Row 3: the soil quantity "lots" is not a number/.test(tx) && /Row 4: "25:00" is not a time/.test(tx) && /Row 5: "32\/13\/2027" is not a date/.test(tx) && /Row 6: the maximum loaders "0" must be a whole number of at least 1/.test(tx) && /Row 7: the working days "Funday" are not understood/.test(tx), 'each mistake names its row and says what is wrong');
+  ok(Model.parseSections('Name,Colour\nA,red', ex).errors[0].text.indexOf('must name at least the length and the soil quantity') >= 0, 'a file without the length and quantity columns is explained');
+  ok(Model.parseSections('  \n', ex).errors[0].text.indexOf('nothing to import') >= 0, 'empty input is explained');
+  ok(Model.parseSections('Name,Length,Quantity\n,500,100', ex).warnings.length === 1, 'a row without a name gets a default name and a warning');
+  // the template imports cleanly, and imported sections run
+  const tp = Model.parseSections(Model.sectionsCSV(ex, true), ex);
+  ok(tp.errors.length === 0 && tp.sections.length === 2 && tp.sections[1].openFrom === '2027-03-08', 'the downloadable template imports with no problems');
+  const rep = Model.normalise(Model.applyImport(JSON.parse(JSON.stringify(ex)), tp, 'replace')), app = Model.normalise(Model.applyImport(JSON.parse(JSON.stringify(ex)), tp, 'append'));
+  ok(rep.sections.length === 2 && app.sections.length === 14 && new Set(app.sections.map(s => s.id)).size === 14, 'replace gives 2 sections; append gives 14 with unique ids');
+  ok(Model.validate(rep).filter(x => x.level === 'error').length === 0 && Engine.simulate(rep).summary.unfilled < 1e-6, 'the imported template scenario validates and runs to completion');
+}
+
+console.log('\n57. E6 PLANNED VERSUS ACTUAL: variance by day and a re-forecast from today\'s position');
+{
+  const e6 = actuals => { const sc = tiny(); sc.settings.maxMovesPerDay = 2; return withMods(sc, { E6: true }, { E6: { actuals: actuals.map((a, i) => Object.assign({ id: 'a' + i }, a)) } }); };
+  const day = s => Engine.fmtDay(Engine.parseISO(s));
+  // hand: cap 2 a day. Plan: Monday 2 loads (40 t), Tuesday 2 (80 t cumulative), Wednesday 1 (100 t); the last load tips Wed 07:22.
+  const base = e6([]), pr = Engine.simulate(base);
+  ok(Model.plannedCumulative(pr).slice(0, 3).join() === '40,80,100', 'hand: planned cumulative tonnes at the end of Mon, Tue, Wed are 40, 80, 100');
+  const v = Model.actualsAnalysis(e6([{ date: '2027-01-11', tonnes: 20 }, { date: '2027-01-12', tonnes: 40 }]), pr);
+  ok(v.map(x => x.actualCum + '/' + x.plannedCum + '/' + x.variance).join() === '20/40/-20,60/80/-20', 'variance: actual 20 then 60 against a plan of 40 then 80 is 20 t behind each day');
+  // actual equals the plan: the forecast finish is the planned finish (Wed 07:22)
+  const eq = e6([{ date: '2027-01-11', tonnes: 40 }]), er = Model.reforecast(eq, Engine.simulate(eq));
+  ok(er.lagDays === 0 && er.forecastEnd === day('2027-01-13') && er.forecast.summary.endTime % 1440 === 7 * 60 + 22 && er.variance === 0, 'hand: 40 t done by Monday as planned: remaining 60 t restarts Tuesday and finishes Wed 07:22, as planned (no lag)');
+  // nothing moved by Monday: the full 100 t starts Tuesday and finishes Thursday, a day later
+  const bh = e6([{ date: '2027-01-11', tonnes: 0 }]), br = Model.reforecast(bh, Engine.simulate(bh));
+  ok(br.lagDays === 1 && br.forecastEnd === day('2027-01-14') && br.variance === -40, 'hand: nothing moved by Monday (40 t behind): 100 t from Tuesday at 2 loads a day ends Thursday, 1 day late');
+  // ahead of plan: 80 t by Monday leaves 20 t for Tuesday, a day early
+  const ah = e6([{ date: '2027-01-11', tonnes: 80 }]), ar = Model.reforecast(ah, Engine.simulate(ah));
+  ok(ar.lagDays === -1 && ar.forecastEnd === day('2027-01-12') && ar.variance === 40, 'hand: 80 t by Monday (40 t ahead): 20 t left, finished Tuesday, 1 day early');
+  const dn = e6([{ date: '2027-01-13', tonnes: 100 }]), dr = Model.reforecast(dn, Engine.simulate(dn));
+  ok(dr.finished && dr.forecastEnd === dr.plannedEnd, 'all 100 t done: the job is finished');
+  ok(Model.reforecast(base, pr) === null, 'no actuals entered: nothing to forecast');
+  const hashOf = q => crypto.createHash('sha1').update(JSON.stringify([q.log.src, q.log.dst, q.log.start, q.log.tip, q.log.t])).digest('hex').slice(0, 12);
+  ok(hashOf(pr) === hashOf(Engine.simulate((() => { const x = tiny(); x.settings.maxMovesPerDay = 2; return x; })())), 'E6 never changes the plan itself');
+  ok(Model.validate(e6([{ date: 'soon', tonnes: 5 }])).some(x => x.level === 'error' && /date is not a valid date/.test(x.text) && x.cell.mod === 'E6'), 'a bad date is rejected in plain English');
+  ok(Model.validate(e6([{ date: '2027-01-11', tonnes: -5 }])).some(x => /tonnes must be 0 or more/.test(x.text)), 'negative tonnes are rejected');
+  ok(Model.validate(e6([{ date: '2027-01-11', tonnes: 5 }, { date: '2027-01-11', tonnes: 7 }])).some(x => x.level === 'warn' && /Two actuals/.test(x.text)), 'two actuals on one date are flagged');
+}
+
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
 {
   const a = Model.exampleSimple(); a.setup.level = 'custom'; a.modules.B1 = { site: { fleet: 12 }, mode: 'site' };

@@ -252,6 +252,15 @@
           if (!same) add('warn', (s.name || 'A section') + ' can only ' + (q > 0 ? 'send its soil to' : 'receive soil from') + ' the other side of ' + nm + ', so it cannot start before ' + when + '.', mc(b.id + ':openDate'));
         });
       });
+    } else if (id === 'E4') {
+      if (m.dateFormat !== 'uk' && m.dateFormat !== 'iso') add('error', 'The date format must be UK (dd/mm/yyyy) or ISO (yyyy-mm-dd).', mc('dateFormat'));
+    } else if (id === 'E6') {
+      const seen = {};
+      (m.actuals || []).forEach((a, k) => {
+        if (Engine.parseISO(a.date) === null) add('error', 'Actual ' + (k + 1) + ': the date is not a valid date.', mc('actual' + k + 'd'));
+        else { if (seen[a.date]) add('warn', 'Two actuals are entered for ' + a.date + '; both are added together.', mc('actual' + k + 'd')); seen[a.date] = 1; }
+        if (!(+a.tonnes >= 0)) add('error', 'Actual ' + (k + 1) + ': the tonnes must be 0 or more.', mc('actual' + k + 't'));
+      });
     } else if (id === 'E1') {
       [['lorryRate', 'The lorry hire rate'], ['excavatorRate', 'The excavator hire rate'], ['receivingRate', 'The receiving plant hire rate'], ['fuelPrice', 'The fuel price'], ['labourRate', 'The labour rate']].forEach(([k, nm]) => { if (!(+m[k] >= 0)) add('error', nm + ' must be 0 or more.', mc(k)); });
       if (m.basis !== 'used' && m.basis !== 'standing') add('error', 'The lorry hire basis must be "used" or "standing".', mc('basis'));
@@ -373,6 +382,136 @@
     return out;
   }
 
+  // ---------- E4 programme export, E5 section import, E6 planned versus actual ----------
+  const csvCell = v => { v = v === null || v === undefined ? '' : String(v); return /[",\n\r;\t]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const fmtDate = (dn, style) => { if (dn === null || dn === undefined) return ''; const iso = Engine.dayToISO(dn); return style === 'iso' ? iso : iso.slice(8, 10) + '/' + iso.slice(5, 7) + '/' + iso.slice(0, 4); };
+  const DOWS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+  const daysText = wd => { const a = (wd || []).map(Boolean); if (a.join() === 'true,true,true,true,true,false,false') return 'Mon-Fri'; if (a.join() === 'true,true,true,true,true,true,false') return 'Mon-Sat'; if (a.every(Boolean)) return 'Mon-Sun'; return a.map((x, i) => (x ? DOWS[i][0].toUpperCase() + DOWS[i].slice(1) : '')).filter(Boolean).join(' '); };
+
+  // E4: section start and finish dates as CSV, for import into P6 or MS Project (map the columns on import: Activity ID / ID, Activity Name / Name, Original Duration / Duration).
+  function programmeCSV(scn, res) {
+    const e4 = (scn.modules || {}).E4 || {}, style = e4.dateFormat === 'iso' ? 'iso' : 'uk', prefix = String(e4.idPrefix || 'EW');
+    const D = Engine.chartData(res), P = res.P, rows = [['Activity ID', 'Activity Name', 'Original Duration (days)', 'Start', 'Finish', 'Percent Complete', 'Type', 'Quantity (t)']];
+    D.sections.forEach((sec, i) => {
+      if (sec.type === 'none') return;
+      const r = res.sections[i], d0 = sec.start === null ? null : Math.floor(sec.start / Engine.DAY), d1 = sec.start === null ? null : Math.floor(sec.end / Engine.DAY);
+      const pct = !sec.reached ? Math.max(0, Math.min(99, Math.round((1 - r.remaining / Math.abs(r.qty)) * 100))) : 100;
+      rows.push([prefix + String(i + 1).padStart(3, '0'), P.names[i], d0 === null ? '' : d1 - d0 + 1, d0 === null ? '' : fmtDate(P.startDay + d0, style), sec.reached ? fmtDate(P.startDay + d1, style) : '', d0 === null ? 0 : pct, sec.type === 'cut' ? 'Cut' : 'Fill', Math.round(Math.abs(r.qty))]);
+    });
+    return rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+  }
+
+  // E5: the section table as CSV (also the downloadable template), and a forgiving parser for CSV files or cells pasted from a spreadsheet.
+  const SECTION_COLS = ['Name', 'Length (m)', 'Soil quantity (+ cut, - fill)', 'Loads start from', 'Loads start to', 'Earliest tipping date', 'Max loaders', 'Working days'];
+  function sectionsCSV(scn, template) {
+    const rows = [SECTION_COLS];
+    if (template) rows.push(['Cutting A', 600, 12000, '07:00', '19:00', '', 2, 'Mon-Fri'], ['Embankment B', 800, -12000, '07:00', '19:00', '08/03/2027', 2, 'Mon-Fri']);
+    else scn.sections.forEach(s => rows.push([s.name, s.lengthM, secQty(s), s.workStart, s.workEnd, s.openFrom ? fmtDate(Engine.parseISO(s.openFrom), 'uk') : '', s.maxLoaders, daysText(s.workDays)]));
+    return rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+  }
+  function splitRows(text) { // CSV / TSV with quoted fields; the delimiter is whichever of tab, semicolon or comma the first line uses most
+    const first = text.split(/\r?\n/).find(l => l.trim()) || '', cnt = c => first.split(c).length - 1;
+    const delim = cnt('\t') >= Math.max(cnt(';'), cnt(',')) && cnt('\t') > 0 ? '\t' : cnt(';') > cnt(',') ? ';' : ',';
+    const rows = []; let row = [], cur = '', q = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+      else if (c === '"') q = true;
+      else if (c === delim) { row.push(cur); cur = ''; }
+      else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(cur); rows.push(row); row = []; cur = ''; }
+      else cur += c;
+    }
+    if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+    return rows.filter(r => r.some(x => x.trim() !== ''));
+  }
+  function parseDate(v) { v = String(v).trim(); let m; if (!v) return ''; if ((m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(v))) return v.length === 10 ? v : m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0');
+    if ((m = /^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/.exec(v))) { const y = m[3].length === 2 ? '20' + m[3] : m[3], iso = y + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0'); return Engine.parseISO(iso) === null ? null : iso; } return null; }
+  function parseTime(v) { v = String(v).trim(); const m = /^(\d{1,2})[:.](\d{2})$/.exec(v); if (!m) return null; const t = m[1].padStart(2, '0') + ':' + m[2]; return Engine.hm(t) === null ? null : t; }
+  function parseDays(v) {
+    v = String(v).trim().toLowerCase(); if (!v) return [1, 1, 1, 1, 1, 0, 0];
+    if (/^[01]{7}$/.test(v)) return v.split('').map(Number);
+    if (/^(weekdays?|mon-?fri|mon to fri|monday to friday)$/.test(v)) return [1, 1, 1, 1, 1, 0, 0];
+    if (/^(mon-?sat|mon to sat|monday to saturday)$/.test(v)) return [1, 1, 1, 1, 1, 1, 0];
+    if (/^(all|every day|7 days|mon-?sun|daily)$/.test(v)) return [1, 1, 1, 1, 1, 1, 1];
+    const out = [0, 0, 0, 0, 0, 0, 0], toks = v.split(/[\s,;\/+&]+/).filter(Boolean); if (!toks.length) return null;
+    for (const t of toks) { const k = DOWS.indexOf(t.slice(0, 3)); if (k < 0) return null; out[k] = 1; }
+    return out;
+  }
+  function parseSections(text, scn) {
+    const rows = splitRows(String(text || '')), out = { sections: [], errors: [], warnings: [], rows: 0 };
+    if (!rows.length) { out.errors.push({ row: 0, text: 'There is nothing to import: the file or pasted text is empty.' }); return out; }
+    const ALIAS = { name: ['name', 'section', 'section name'], lengthM: ['length', 'length (m)', 'len', 'length m'], qty: ['soil quantity (+ cut, - fill)', 'quantity', 'qty', 'soil', 'soil quantity', 'volume', 'tonnes'], workStart: ['loads start from', 'start', 'from', 'work start', 'starts', 'start time'], workEnd: ['loads start to', 'to', 'end', 'finish', 'work end', 'until', 'end time'], openFrom: ['earliest tipping date', 'open', 'opens', 'open from', 'tipping date', 'earliest'], maxLoaders: ['max loaders', 'loaders'], workDays: ['working days', 'days', 'work days'] };
+    const norm = h => String(h).trim().toLowerCase().replace(/\s+/g, ' '), idx = {};
+    const head = rows[0].map(norm); let dataStart = 1;
+    head.forEach((h, c) => { for (const k in ALIAS) if (ALIAS[k].indexOf(h) >= 0 && idx[k] === undefined) idx[k] = c; });
+    if (idx.name === undefined && idx.lengthM === undefined && idx.qty === undefined) { // no header row: take the columns in template order
+      dataStart = 0; ['name', 'lengthM', 'qty', 'workStart', 'workEnd', 'openFrom', 'maxLoaders', 'workDays'].forEach((k, c) => (idx[k] = c));
+    } else if (idx.lengthM === undefined || idx.qty === undefined) {
+      out.errors.push({ row: 1, text: 'The first row must name at least the length and the soil quantity columns. Use the template (Download template) to see the layout.' }); return out;
+    }
+    const get = (r, k) => (idx[k] === undefined || r[idx[k]] === undefined ? '' : String(r[idx[k]]).trim());
+    for (let ri = dataStart; ri < rows.length; ri++) {
+      const r = rows[ri], rn = ri + 1; out.rows++;
+      const sec = newSection(out.sections.length), errs = out.errors.length, nm = get(r, 'name');
+      if (!nm) out.warnings.push({ row: rn, text: 'Row ' + rn + ' has no name, so it is called "Section ' + (out.sections.length + 1) + '".' }); else sec.name = nm;
+      const len = parseFloat(get(r, 'lengthM').replace(/,/g, '')), q = parseFloat(get(r, 'qty').replace(/,/g, ''));
+      if (!(len > 0)) out.errors.push({ row: rn, text: 'Row ' + rn + ': the length "' + get(r, 'lengthM') + '" is not a number above 0.' }); else sec.lengthM = len;
+      if (!isFinite(q)) out.errors.push({ row: rn, text: 'Row ' + rn + ': the soil quantity "' + get(r, 'qty') + '" is not a number.' }); else setQty(sec, q);
+      ['workStart', 'workEnd'].forEach(k => { const v = get(r, k); if (!v) return; const t = parseTime(v); if (t === null) out.errors.push({ row: rn, text: 'Row ' + rn + ': "' + v + '" is not a time. Write it like 07:00.' }); else sec[k] = t; });
+      const od = get(r, 'openFrom'); if (od) { const d = parseDate(od); if (d === null) out.errors.push({ row: rn, text: 'Row ' + rn + ': "' + od + '" is not a date. Write it like 08/03/2027 or 2027-03-08.' }); else sec.openFrom = d; }
+      const ml = get(r, 'maxLoaders'); if (ml) { if (!(Math.floor(+ml) >= 1)) out.errors.push({ row: rn, text: 'Row ' + rn + ': the maximum loaders "' + ml + '" must be a whole number of at least 1.' }); else sec.maxLoaders = Math.floor(+ml); }
+      const wd = get(r, 'workDays'); if (wd) { const d = parseDays(wd); if (d === null) out.errors.push({ row: rn, text: 'Row ' + rn + ': the working days "' + wd + '" are not understood. Write Mon-Fri, Mon-Sat, or 1111100.' }); else sec.workDays = d; }
+      if (out.errors.length === errs) out.sections.push(sec);
+    }
+    return out;
+  }
+  // Put imported sections into a scenario: replace the whole table, or append to it.
+  function applyImport(scn, parsed, mode) {
+    const secs = parsed.sections.map(x => Object.assign({}, x, { id: newId() }));
+    scn.sections = mode === 'append' ? scn.sections.concat(secs) : secs;
+    return scn;
+  }
+
+  // E6: cumulative tonnes tipped on site by the end of each day, from the movement log.
+  function plannedCumulative(res) {
+    const L = res.log, n = res.P.n, out = []; let total = 0;
+    const days = Math.floor(res.summary.endTime / Engine.DAY) + 2, per = new Float64Array(days);
+    for (let k = 0; k < res.n; k++) if (L.dst[k] < n) per[Math.floor(L.tip[k] / Engine.DAY)] += L.t[k];
+    for (let d = 0; d < days; d++) { total += per[d]; out.push(total); }
+    return out;
+  }
+  // Variance table: for every day with an actual, the cumulative actual, the cumulative plan to the end of that day, and the difference.
+  function actualsAnalysis(scn, res) {
+    const e6 = ((scn.modules || {}).E6) || {}, plan = plannedCumulative(res), P = res.P;
+    const rows = (e6.actuals || []).filter(a => Engine.parseISO(a.date) !== null && +a.tonnes >= 0).map(a => ({ date: a.date, day: Engine.parseISO(a.date) - P.startDay, tonnes: +a.tonnes })).sort((a, b) => a.day - b.day);
+    let cum = 0; const out = rows.map(r => { cum += r.tonnes; const pl = r.day < 0 ? 0 : plan[Math.min(r.day, plan.length - 1)]; return { date: r.date, day: r.day, actual: r.tonnes, actualCum: cum, plannedCum: pl, variance: cum - pl }; });
+    return out;
+  }
+  // Re-forecast from today's position. The plan's state at the moment its tipped tonnage equals the actual tonnage becomes a "leftover" scenario
+  // (remaining soil per section, starting the day after the last actual), which is simulated with the ordinary dispatcher.
+  function reforecast(scn, res) {
+    const rows = actualsAnalysis(scn, res); if (!rows.length) return null;
+    const L = res.log, P = res.P, n = P.n, last = rows[rows.length - 1], A = last.actualCum;
+    const order = Array.from({ length: res.n }, (_, k) => k).filter(k => L.dst[k] < n).sort((a, b) => L.tip[a] - L.tip[b]);
+    let cum = 0, tStar = -1, upto = 0;
+    if (A > 1e-9) { for (; upto < order.length; upto++) { cum += L.t[order[upto]]; if (cum >= A - 1e-9) { tStar = L.tip[order[upto]]; upto++; break; } } if (tStar < 0) tStar = Infinity; }
+    const plannedEnd = Engine.fmtDay(P.startDay + Math.floor(res.summary.endTime / Engine.DAY)), plannedEndDay = P.startDay + Math.floor(res.summary.endTime / Engine.DAY);
+    const totalPlanned = order.reduce((a, k) => a + L.t[k], 0);
+    if (tStar === Infinity || A >= totalPlanned - 1e-6) return { asOf: last.date, actual: A, planned: last.plannedCum, variance: A - last.plannedCum, finished: true, plannedEnd, forecastEnd: plannedEnd, lagDays: 0 };
+    const out = new Float64Array(n), inn = new Float64Array(n);
+    for (let q = 0; q < upto; q++) { const k = order[q]; if (L.src[k] < n) out[L.src[k]] += L.t[k]; inn[L.dst[k]] += L.t[k]; }
+    const fc = JSON.parse(JSON.stringify(scn)); fc.plan = null; fc.saved = [];
+    fc.settings.startDate = Engine.dayToISO(Engine.parseISO(last.date) + 1);
+    const uf = P.unitF;
+    fc.sections.forEach((s, i) => {
+      const q = P.qty[i]; if (!q) return;
+      const rem = q > 0 ? q - out[i] : -q - inn[i], tot = Math.abs(q), f = tot > 0 ? Math.max(0, rem) / tot : 0;
+      s.lines.forEach(l => (l.qty = Math.round(+l.qty * f * 1e4) / 1e4));
+    });
+    const fr = Engine.simulate(fc), fcStart = Engine.parseISO(fc.settings.startDate), forecastEndDay = fcStart + Math.floor(fr.summary.endTime / Engine.DAY);
+    return { asOf: last.date, actual: A, planned: last.plannedCum, variance: A - last.plannedCum, finished: false, plannedEnd, plannedEndDay, forecastEnd: Engine.fmtDay(forecastEndDay), forecastEndDay, lagDays: forecastEndDay - plannedEndDay, forecast: fr };
+  }
+
   // ---------- examples ----------
   function mk(name, lengthM, qty, extra) {
     const s = newSection(0); s.name = name; s.lengthM = lengthM; setQty(s, qty);
@@ -468,5 +607,5 @@
   }
   const EXAMPLES = { simple: exampleSimple, modules: exampleModules, materials: exampleMaterials, site: exampleSite, risk: exampleRisk };
 
-  return { VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, exampleSimple, exampleModules, exampleMaterials, exampleSite, exampleRisk };
+  return { programmeCSV, sectionsCSV, parseSections, applyImport, actualsAnalysis, plannedCumulative, reforecast, VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, exampleSimple, exampleModules, exampleMaterials, exampleSite, exampleRisk };
 });
