@@ -107,3 +107,6 @@ Hand calculations are in the test files next to the simulated result (tests 41-5
 6. **Risk analysis**: run it on a real job and judge whether the 50%/80% dates look sensible; the weather defaults are my UK guesses.
 7. **Optimiser with cost or carbon goal** on the Commercial demo.
 8. Cost rates and fuel burn defaults (E1/E2) are placeholders, not your rates.
+
+---
+**Final state:** `master` was fast-forwarded to `phases567` (tag `phases567-done`), everything green. The live page at http://192.168.1.15:8090/earthmove.html was rebuilt from it and returns 200. Only my own scratch servers (port 8091) were ever started and stopped; the live server on 8090 was never touched except by rebuilding `dist/`. The `step2-scaffold` branch and the `phases567` branch are left in place (nothing deleted except `phase4-materials`, as instructed).
