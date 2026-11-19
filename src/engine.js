@@ -107,7 +107,7 @@
       P.openDay[x] = -1e9; P.ws[x] = a === null ? 420 : a; P.we[x] = b === null ? 1140 : b;
       P.loaders[x] = Math.max(1, Math.floor(+r.lanes || 4));
       P.workDays.push(Array.isArray(r.workDays) && r.workDays.length === 7 ? r.workDays.map(Boolean) : [true, true, true, true, true, false, false]);
-      if (nd.kind === 1) P.srcs.push(x);
+      if (nd.kind === 1 || nd.kind === 3) P.srcs.push(x);
     });
     P.cfg = buildCfg(scn, P, uf);
     // per-source destination list, nearest first (ties by section order)
@@ -233,8 +233,9 @@
         P.qty[x] = b > EPS ? b : 0;
         M.srcLines[x] = [{ m: P.node[x].material, t: P.qty[x] }];
       });
-      P.srcs = P.srcs.filter(i => i < P.n || P.qty[i] > 0);
+      P.srcs = P.srcs.filter(i => i < P.n || P.kind[i] === 3 || P.qty[i] > 0);
     }
+    P.nodeIdx.forEach(x => { if (P.kind[x] === 3) M.srcLines[x] = M.ids.map(id => ({ m: id, t: 0 })); }); // a stockpile's lines are its material buckets
     return M;
   }
   const dist = (P, i, j) => Math.abs(P.mid[i] - P.mid[j]);
@@ -367,6 +368,19 @@
       return { x: bx, full };
     }
     const anyNeed = m => P.dsts.some(j => canTake(j, m));
+    // A5: stockpiles. stock[x][mi] = tonnes that can be hauled out again (available from the day after they arrive),
+    // parked[x] = tonnes put there because nothing needs them (never hauled out). stockTot counts both against the capacity.
+    const stockList = P.nodeIdx.filter(x => P.kind[x] === 3), stock = [], parked = new Float64Array(nn), stockTot = new Float64Array(nn);
+    const matIdx = {}; if (M) M.ids.forEach((id, mi) => (matIdx[id] = mi));
+    stockList.forEach(x => (stock[x] = new Float64Array(M.ids.length)));
+    const stockIn = new Float64Array(nn), stockOut = new Float64Array(nn);
+    let placedT = 0, handleCost = 0, parkedT = 0;
+    const stockSpace = x => (+P.node[x].capacityT > 0 ? +P.node[x].capacityT : 0) - stockTot[x];
+    function pickStock(i) { // nearest stockpile with room
+      let bx = -1, bd = Infinity;
+      for (const x of stockList) { if (stockSpace(x) <= EPS) continue; const dd = Math.abs(P.mid[i] - P.mid[x]); if (dd < bd) { bd = dd; bx = x; } }
+      return bx;
+    }
     const ordCache = {}, ptrCache = {};
     function orderFor(i, m) { // nearest fill first; with A2 only fills that accept m, and fills asking for exactly m before the rest
       if (!(M && M.a2)) return P.destOrder[i];
@@ -436,7 +450,7 @@
     // a fill not open on arrival, or, with B4, a tipping queue longer than the allowed limit), or null.
     function pick(i, departT, day, ty, svc, capT, mat) {
       const arcs = arcsBySrc[i];
-      let minWait = Infinity;
+      let minWait = Infinity, qWait = false;
       // can this load go to fill j now? returns tip end time, or sets minWait and returns -1
       const consider = (j, tr) => {
         if (P.openDay[j] > day + Math.floor((departT + tr) / DAY)) {
@@ -449,6 +463,7 @@
         if (ti.ts - arr > recv.maxQ) { // queue too long: hold loading until it would be short enough
           const w = ti.mf - recv.maxQ - tr - svc - day * DAY;
           if (w < minWait) minWait = w;
+          qWait = true;
           return -1;
         }
         return ti.te;
@@ -460,7 +475,7 @@
           live++;
           if (consider(a.to, tripL(P, ty, i, a.to)) >= 0) return { j: a.to, arc: a };
         }
-        return live > 0 ? { wait: minWait } : null; // planned destinations unavailable for now, or plan finished for this source
+        return live > 0 ? { wait: minWait, queue: qWait } : null; // planned destinations unavailable for now, or plan finished for this source
       }
       const order = orderFor(i, mat), pkey = M && M.a2 ? i + '|' + mat : i;
       let p = (M && M.a2 ? ptrCache[pkey] : ptr[i]) || 0;
@@ -476,7 +491,7 @@
         if (te < bestTip) { bestTip = te; bestJ = j; } // with receiving rates: where it will finish tipping soonest (nearest wins ties)
       }
       if (bestJ >= 0) return { j: bestJ, arc: null };
-      return minWait === Infinity ? null : { wait: minWait };
+      return minWait === Infinity ? null : { wait: minWait, queue: qWait };
     }
 
     for (d = 0; d < horizon; d++) {
@@ -492,6 +507,7 @@
         }
         rdyStale.fill(1);
       }
+      for (const x of stockList) { let tot = 0; for (let mi = 0; mi < stock[x].length; mi++) { srcLeft[x][mi] = stock[x][mi]; tot += stock[x][mi]; } remSrc[x] = tot; }
       const active = [];
       if (exc && exc.mode === 'byMachine') {
         // individual excavators: today's loading slots are the machines assigned to each section today
@@ -540,14 +556,19 @@
           if (c >= sl.length) { remSrc[best] = 0; continue; }
           lineIdx = c; capT = Math.min(capT, sl[c]); mat = M.srcLines[best][c].m;
           if (M.a1) capT = Math.min(capT, ty.body * M.rho[mat] / M.bulk[mat]);
-          if (best >= n) { const av = nodeAvail(best, d); if (av <= EPS) { blocked[best] = 1; continue; } capT = Math.min(capT, av); } // import: daily limit
+          if (P.kind[best] === 1) { const av = nodeAvail(best, d); if (av <= EPS) { blocked[best] = 1; continue; } capT = Math.min(capT, av); } // import: daily limit
         }
-        const svc = best >= n ? Math.max(1, Math.round(+P.node[best].roundTripMin || 0)) : svcMin(best, bestSlot, Math.min(capT, remSrc[best]));
+        const svc = P.kind[best] === 1 ? Math.max(1, Math.round(+P.node[best].roundTripMin || 0)) : svcMin(best, bestSlot, Math.min(capT, remSrc[best]));
         const departT = bestT + svc;
         let pk = pick(best, departT, d, ty, svc, capT, mat);
         if (!pk && M && M.a4 && best < n && !anyNeed(mat)) { // nothing needs this material: ship it off site if an export takes it (A4)
           const e = pickExport(best, mat, d);
           if (e.x >= 0) pk = { j: e.x, arc: null };
+        }
+        if (M && M.a5 && P.kind[best] === 0 && (!pk || (pk.wait !== undefined && !pk.queue && !(pk.wait < P.we[best] && pk.wait > bestT)))) {
+          // nowhere on site can take it and it cannot wait for a fill to open today: park it in the nearest stockpile with room (A5)
+          const x = pickStock(best);
+          if (x >= 0) pk = { j: x, arc: null, parked: !anyNeed(mat) };
         }
         if (!pk || pk.wait !== undefined) {
           // Nowhere to tip yet. If a destination opens at midnight and a long trip can still reach it
@@ -559,13 +580,13 @@
           continue;
         }
         const j = pk.j;
-        let tonnes = j >= n ? Math.min(capT, remSrc[best], nodeAvail(j, d)) : Math.min(capT, remSrc[best], M ? takeCap(j, mat) : freeNeed[j]);
+        let tonnes = j >= n ? Math.min(capT, remSrc[best], P.kind[j] === 2 ? nodeAvail(j, d) : stockSpace(j)) : Math.min(capT, remSrc[best], M ? takeCap(j, mat) : freeNeed[j]);
         let dLine = -1, consume = 0;
         if (pk.arc) tonnes = Math.min(tonnes, pk.arc.rem);
         const arrAbs = base + departT + tripL(P, ty, best, j);
         let tipAbs = arrAbs;
         if (j >= n && P.kind[j] === 2) tipAbs = arrAbs + Math.max(0, Math.round(+P.node[j].roundTripMin || 0)); // export: the lorry is back at the gate after its off-site round trip
-        else if (recv) { // queue for a tipping bay, then tip at the section's receiving rate
+        else if (recv && j < n) { // queue for a tipping bay, then tip at the section's receiving rate
           const bf = bayFree[j] || (bayFree[j] = new Float64Array(recv.bays[j]));
           let bi = 0; for (let k = 1; k < bf.length; k++) if (bf[k] < bf[bi]) bi = k;
           const ts = Math.max(arrAbs, bf[bi]);
@@ -573,14 +594,17 @@
           tipAbs = ts + dur; bf[bi] = tipAbs; tipWaitMin += ts - arrAbs; if (ts - arrAbs > tipWaitMax) tipWaitMax = ts - arrAbs;
         }
         consume = tonnes;
-        if (best >= n) { nodeUsed[best] += tonnes; nodeTot[best] += tonnes; }
-        if (j >= n) { nodeUsed[j] += tonnes; nodeTot[j] += tonnes; consume = 0; }
+        if (P.kind[best] === 1) { nodeUsed[best] += tonnes; nodeTot[best] += tonnes; }
+        if (j >= n) { consume = 0; if (P.kind[j] === 2) { nodeUsed[j] += tonnes; nodeTot[j] += tonnes; } }
+        if (j < n) placedT += tonnes;
+        if (P.kind[j] === 3) { stockTot[j] += tonnes; if (pk.parked) { parked[j] += tonnes; parkedT += tonnes; } else { stock[j][matIdx[mat]] += tonnes; stockIn[j] += tonnes; } }
+        if (P.kind[best] === 3) { stock[best][lineIdx] -= tonnes; if (stock[best][lineIdx] < 1e-9) stock[best][lineIdx] = 0; stockTot[best] -= tonnes; stockOut[best] += tonnes; handleCost += tonnes * (+P.node[best].handleCostPerT || 0); }
         if (M && M.a2 && j < n) { // place it in its fill line; a different class takes up space in proportion to its compacted volume
           dLine = lineFor(j, mat); const req = M.dstLines[j][dLine].req;
           if (req !== mat) consume = tonnes * M.occ[mat] / M.occ[req];
           needLine[j][dLine] -= consume; if (needLine[j][dLine] < EPS) needLine[j][dLine] = 0;
         }
-        remSrc[best] -= tonnes; if (j < n) freeNeed[j] -= consume; if (best < n) totalRem -= tonnes;
+        remSrc[best] -= tonnes; if (j < n) freeNeed[j] -= consume; if (P.kind[best] !== 1 && !(P.kind[j] === 3 && !pk.parked)) totalRem -= tonnes; // deposits into a stockpile stay to be hauled out; parked soil counts as dealt with
         if (M) { const sl = srcLeft[best]; sl[lineIdx] -= tonnes; if (sl[lineIdx] < EPS) sl[lineIdx] = 0; if (!noLog) { ML.mat.push(mat); ML.sline.push(lineIdx); ML.dline.push(dLine); } }
         if (pk.arc) pk.arc.rem -= tonnes;
         if (remSrc[best] < EPS) { if (best < n) totalRem -= remSrc[best]; remSrc[best] = 0; }
@@ -608,7 +632,8 @@
     for (let k = 0; k <= lastDay; k++) if (daily[k] === undefined) daily[k] = 0;
 
     // ----- summary -----
-    const unplacedSurplus = P.srcs.reduce((s, i) => s + (i < n ? remSrc[i] : 0), 0);
+    const stockLeft = stockList.reduce((a, x) => a + stockTot[x], 0); // soil still in a stockpile at the end (parked or never hauled out)
+    const unplacedSurplus = P.srcs.reduce((s, i) => s + (i < n ? remSrc[i] : 0), 0) + stockLeft;
     const unfilled = P.dsts.reduce((s, j) => s + freeNeed[j], 0);
     const complete = unplacedSurplus <= EPS && unfilled <= EPS && (totalCut > 0 || totalFill > 0);
     let span = 0, idle = 0;
@@ -631,12 +656,12 @@
     if (M) {
       const unplacedByMat = {};
       for (const i of P.srcs) if (i < n) srcLeft[i].forEach((t, l) => { if (t > EPS) unplacedByMat[M.srcLines[i][l].m] = (unplacedByMat[M.srcLines[i][l].m] || 0) + t; });
-      msum = { placedT: tonnesMoved, unplacedByMat, importT: 0, exportT: 0, importCost: 0, exportCost: 0, nodes: [] };
+      msum = { placedT, handleCost, parkedT, stockInT: stockList.reduce((a, x) => a + stockIn[x], 0), stockOutT: stockList.reduce((a, x) => a + stockOut[x], 0), stockClosingT: stockList.reduce((a, x) => a + stockTot[x] - parked[x], 0), unplacedByMat, importT: 0, exportT: 0, importCost: 0, exportCost: 0, nodes: [] };
       for (const x of P.nodeIdx) {
         const r = P.node[x], cost = nodeTot[x] * (+r.costPerT || 0);
         if (P.kind[x] === 1) { msum.importT += nodeTot[x]; msum.importCost += cost; }
         if (P.kind[x] === 2) { msum.exportT += nodeTot[x]; msum.exportCost += cost; }
-        msum.nodes.push({ id: P.ids[x], name: P.names[x], kind: P.kind[x], tonnes: nodeTot[x], cost });
+        msum.nodes.push({ id: P.ids[x], name: P.names[x], kind: P.kind[x], tonnes: P.kind[x] === 3 ? stockIn[x] : nodeTot[x], out: P.kind[x] === 3 ? stockOut[x] : 0, closing: P.kind[x] === 3 ? stockTot[x] : 0, cost: P.kind[x] === 3 ? stockOut[x] * (+r.handleCostPerT || 0) : cost });
       }
     }
     if (noLog) return { P, log: null, n: moves, daily, sections: null, summary, msum };

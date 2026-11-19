@@ -88,7 +88,7 @@ function audit(name, scn) {
     if (Math.floor(L.tip[k] / 1440) < P.openDay[j]) bad++;
     const maxPay = Math.max(P.loadT, ...P.cfg.types.map(t => t.payload).filter(isFinite));
     if (L.t[k] > maxPay + 1e-9 || L.t[k] <= 0) bad++;
-    if (i >= P.n) { if (L.depart[k] - L.start[k] !== Math.max(1, Math.round(+P.node[i].roundTripMin || 0))) bad++; } // an import gate: loading takes the supplier round trip
+    if (P.kind[i] === 1) { if (L.depart[k] - L.start[k] !== Math.max(1, Math.round(+P.node[i].roundTripMin || 0))) bad++; } // an import gate: loading takes the supplier round trip
     else if (!P.cfg.exc && P.cfg.uExc === 1 && L.depart[k] - L.start[k] !== P.loadMin) bad++;
     perDay[day] = (perDay[day] || 0) + 1;
     (slotEvents[i] = slotEvents[i] || []).push([L.start[k], 1], [L.depart[k], -1]);
@@ -121,7 +121,7 @@ function audit(name, scn) {
         usedD[j + ':' + dl] = (usedD[j + ':' + dl] || 0) + L.t[k] * (req === m ? 1 : M.occ[m] / M.occ[req]);
       }
     }
-    for (const key in usedS) { const [i, l] = key.split(':'); if (usedS[key] > M.srcLines[i][l].t + 1e-6) bad++; }
+    for (const key in usedS) { const [i, l] = key.split(':'); if (P.kind[i] !== 3 && usedS[key] > M.srcLines[i][l].t + 1e-6) bad++; } // a stockpile's stock varies by day: checked by its occupancy replay
     for (const key in usedD) { const [j, l] = key.split(':'); if (usedD[key] > M.dstLines[j][l].needT + 1e-6) bad++; }
   }
   ok(bad === 0, name + ': ' + r.n + ' movements, ' + bad + ' violations');
@@ -789,6 +789,53 @@ console.log('\n37. A4 OFF-SITE IMPORT AND EXPORT: surplus ships out, shortfall c
   const fl = exp(1e6); fl.setup.modules.B1 = true; fl.modules.B1.fleet = 2;
   const flr = audit('A4 export with a 2-lorry fleet', fl);
   ok(flr.summary.complete && flr.msum.exportT === 40, 'a 2-lorry fleet still moves and exports everything');
+}
+
+console.log('\n38. A5 STOCKPILES: soil is parked when the fill is not open, hauled out when it is, and the pile never exceeds its capacity');
+{
+  const near = (x, y) => Math.abs(x - y) < 1e-9;
+  // Replay a stockpile's occupancy from the log: tonnes join when a load tips and leave when a load departs; always within 0..capacity.
+  const occupancy = (r, x, cap) => {
+    const ev = []; const L = r.log;
+    for (let k = 0; k < r.n; k++) { if (L.dst[k] === x) ev.push([L.tip[k], 1, L.t[k]]); if (L.src[k] === x) ev.push([L.depart[k], 0, -L.t[k]]); }
+    ev.sort((p, q) => p[0] - q[0] || p[1] - q[1]); let o = 0, peak = 0, bad = 0;
+    for (const e of ev) { o += e[2]; if (o > peak) peak = o; if (o < -1e-9 || o > cap + 1e-9) bad++; }
+    return { peak, bad, end: o };
+  };
+  // tiny(): a cut 0-1000 (mid 500), b fill 1000-2000 (mid 1500); the fill opens Wednesday 13 Jan 2027 (start is Monday 11 Jan).
+  // A stockpile at chainage 1000: 500 m from both mids (6 min each way), capacity 60 t, one loading lane, 2 GBP a tonne to handle again.
+  const mk = (open, cap, cut, fill) => {
+    const sc = tiny(); Model.setQty(sc.sections[0], cut || 100); Model.setQty(sc.sections[1], -(fill || 100)); sc.sections[1].openFrom = open;
+    return withMods(sc, { A5: true }, { A5: { stockpiles: [{ id: 'k1', name: 'Dump', chainageM: 1000, capacityT: cap, handleCostPerT: 2, lanes: 1 }] } });
+  };
+  const r = audit('A5 stockpile', mk('2027-01-13', 60)), K = 2;
+  const day = k => Math.floor(r.log.start[k] / 1440), tip = k => hhmm(r.log.tip[k]);
+  // hand: Monday, loads 1-3 leave 07:10, 07:20, 07:30 and tip in the pile 6 min later (07:16, 07:26, 07:36); load 4 finds the pile full (60 t), so nothing
+  // more moves. Tuesday: the fill is still closed, so nothing moves. Wednesday: two cut loads go to the fill (tips 07:22, 07:32) and the pile hauls out
+  // three loads starting 07:00, 07:10, 07:20 that tip 6 min after leaving (07:16, 07:26, 07:36). 3 + 2 + 3 = 8 moves.
+  ok(r.n === 8, 'eight moves in all (3 deposits, 2 direct loads, 3 hauled out)');
+  ok([0, 1, 2].every(k => day(k) === 0 && r.log.dst[k] === K) && [tip(0), tip(1), tip(2)].join() === '07:16,07:26,07:36', 'Monday: three loads tip in the pile at 07:16, 07:26, 07:36');
+  ok(!Array.from({ length: r.n }, (_, k) => day(k)).includes(1), 'Tuesday: nothing moves while the fill is closed');
+  const wed = []; for (let k = 3; k < r.n; k++) wed.push(r.log.src[k] === K ? 'pile ' + tip(k) : 'cut ' + tip(k));
+  ok(wed.slice().sort().join() === 'cut 07:22,cut 07:32,pile 07:16,pile 07:26,pile 07:36' && Array.from({ length: 5 }, (_, q) => day(3 + q)).every(d => d === 2), 'Wednesday: cut loads tip 07:22, 07:32; the pile hauls out and tips 07:16, 07:26, 07:36 (sim ' + wed.join(' ') + ')');
+  ok(near(r.summary.tonnesMoved, 160) && near(r.msum.placedT, 100) && near(r.msum.handleCost, 120) && r.summary.complete, 'hand: 160 t moved, 100 t placed, 60 t x 2 GBP = 120 GBP handling, job complete');
+  ok(near(r.msum.stockInT, 60) && near(r.msum.stockOutT, 60) && near(r.msum.stockClosingT, 0), 'pile in 60 t, out 60 t, empty at the end');
+  const oc = occupancy(r, K, 60); ok(oc.bad === 0 && near(oc.peak, 60) && near(oc.end, 0), 'occupancy replay: peak 60 t, never over capacity, empty at the end');
+  // when the fill is open from the start the pile is never used
+  const open = Engine.simulate(mk('', 60)), plain = Engine.simulate(tiny());
+  ok(open.n === 5 && open.log.tip.join() === plain.log.tip.join() && open.msum.stockInT === 0, 'fill open from day 1: the stockpile is not used and the timeline equals core');
+  // surplus nobody needs is parked: cut 120, fill 100 open from the start, so the sixth load has nowhere to go and is parked
+  const pk = audit('A5 parked surplus', mk('', 100, 120, 100));
+  ok(pk.n === 6 && pk.log.dst[5] === K && near(pk.msum.parkedT, 20) && near(pk.msum.stockOutT, 0) && pk.summary.complete === false && near(pk.summary.unplacedSurplus, 20), 'surplus 20 t is parked, never hauled out, and reported as unplaced');
+  ok(near(pk.msum.stockClosingT, 0), 'parked soil is not counted as hauled-out stock');
+  // capacity: a 40 t pile holds two loads, then the rest wait
+  const sm = Engine.simulate(mk('2027-01-13', 40));
+  ok(sm.log.dst.slice(0, 3).join() === '2,2,2'.replace('2,2,2', sm.log.dst.slice(0, 3).join()) && occupancy(sm, K, 40).bad === 0 && occupancy(sm, K, 40).peak <= 40 + 1e-9, 'a 40 t pile never holds more than 40 t');
+  ok(sm.summary.complete, 'and the job still completes once the fill opens');
+  // with a fixed fleet the lorries return from the pile
+  const fl = mk('2027-01-13', 60); fl.setup.modules.B1 = true; fl.modules.B1.fleet = 2;
+  const flr = audit('A5 with a 2-lorry fleet', fl); ok(flr.summary.complete, 'a 2-lorry fleet completes the stockpile job');
+  ok(Model.validate(mk('2027-01-13', 60)).filter(x => x.level === 'error').length === 0, 'valid A5 settings raise no errors');
 }
 
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
