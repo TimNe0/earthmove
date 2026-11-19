@@ -62,8 +62,16 @@
     return rho / cf;
   }
   const lineTonnes = (scn, l) => (+l.qty || 0) * lineFactor(scn, l);
+  // Off-site gates (A4) and stockpiles (A5) are nodes on the road after the sections. kind: 1 import, 2 export, 3 stockpile.
+  function nodeDefsOf(scn) {
+    const mods = (scn.setup && scn.setup.modules) || {}, md = scn.modules || {}, out = [];
+    if (mods.A4) for (const r of (md.A4 || {}).points || []) out.push({ kind: r.kind === 'import' ? 1 : 2, ref: r, id: 'X:' + r.id });
+    if (mods.A5) for (const r of (md.A5 || {}).stockpiles || []) out.push({ kind: 3, ref: r, id: 'K:' + r.id });
+    return out;
+  }
   function prepare(scn) {
-    const st = scn.settings, secs = scn.sections, n = secs.length, nn = n; // nn = sections + off-site/stockpile nodes (none yet)
+    const st = scn.settings, secs = scn.sections, n = secs.length;
+    const nodeDefs = nodeDefsOf(scn), nn = n + nodeDefs.length; // nn = sections + nodes
     const startDay = parseISO(st.startDate);
     // Quantities are stored in the unit the user chose (settings.units) and converted to tonnes here.
     const uf = st.units === 'm3' && +st.density > 0 ? +st.density : 1;
@@ -74,7 +82,7 @@
       ids: [], names: [],
       len: new Float64Array(nn), chain: new Float64Array(nn), mid: new Float64Array(nn), qty: new Float64Array(nn),
       openDay: new Float64Array(nn), ws: new Int32Array(nn), we: new Int32Array(nn), loaders: new Int32Array(nn),
-      workDays: [], total: 0, srcs: [], dsts: [], destOrder: []
+      workDays: [], total: 0, srcs: [], dsts: [], destOrder: [], node: [], nodeIdx: []
     };
     let c = 0;
     for (let i = 0; i < n; i++) {
@@ -91,6 +99,16 @@
       else if (P.qty[i] < 0) P.dsts.push(i);
     }
     P.total = c;
+    nodeDefs.forEach((nd, k) => {
+      const x = n + k, r = nd.ref, a = hm(r.workStart), b = hm(r.workEnd);
+      P.kind[x] = nd.kind; P.node[x] = r; P.nodeIdx.push(x);
+      P.ids.push(nd.id); P.names.push(r.name || nd.id);
+      P.len[x] = 0; P.chain[x] = P.mid[x] = Math.min(Math.max(+r.chainageM || 0, 0), c);
+      P.openDay[x] = -1e9; P.ws[x] = a === null ? 420 : a; P.we[x] = b === null ? 1140 : b;
+      P.loaders[x] = Math.max(1, Math.floor(+r.lanes || 4));
+      P.workDays.push(Array.isArray(r.workDays) && r.workDays.length === 7 ? r.workDays.map(Boolean) : [true, true, true, true, true, false, false]);
+      if (nd.kind === 1) P.srcs.push(x);
+    });
     P.cfg = buildCfg(scn, P, uf);
     // per-source destination list, nearest first (ties by section order)
     for (const i of P.srcs) {
@@ -132,10 +150,15 @@
     }
     // cumulative travel minutes from the road start to each section midpoint, so a trip is |cum[j] - cum[i]|
     const cum = (v, g) => {
-      const mid = new Float64Array(n), start = new Float64Array(n), mpmA = new Float64Array(n); let acc = 0;
+      const mid = new Float64Array(P.nn), start = new Float64Array(n), mpmA = new Float64Array(n); let acc = 0;
       for (let i = 0; i < n; i++) {
         const sp = (lim[i] > 0 ? Math.min(v, lim[i]) : v) * g[i], mpm = 60 / (1000 * sp) / c.uLorry;
         start[i] = acc; mpmA[i] = mpm; mid[i] = acc + P.len[i] / 2 * mpm; acc += P.len[i] * mpm;
+      }
+      for (let k = n; k < P.nn; k++) { // off-site gates and stockpiles sit at a chainage inside some section
+        const x = P.chain[k]; let lo = 0, hi = n - 1;
+        while (lo < hi) { const m = (lo + hi + 1) >> 1; if (P.chain[m] <= x) lo = m; else hi = m - 1; }
+        mid[k] = n ? start[lo] + (x - P.chain[lo]) * mpmA[lo] : 0;
       }
       return { mid, start, mpm: mpmA };
     };
@@ -193,6 +216,25 @@
       M.srcLines[i] = lines.filter(l => +l.qty > 0).map(l => ({ m: l.material, t: lineTonnes(scn, l) }));
       M.dstLines[i] = lines.filter(l => +l.qty < 0).map(l => ({ req: l.material, needT: -lineTonnes(scn, l) }));
     });
+    // Imports (A4) only cover the shortfall: solve the on-site flow with imports priced out of reach, and what the imports
+    // still have to supply is their tonnage budget. (Space ratios between different classes are ignored here.)
+    const imps = P.nodeIdx.filter(x => P.kind[x] === 1);
+    if (imps.length) {
+      const rows = [], cols = [];
+      P.srcs.forEach(i => { if (i < P.n) M.srcLines[i].forEach((l, li) => rows.push({ i, m: l.m, sup: l.t })); });
+      P.dsts.forEach(j => M.dstLines[j].forEach(l => cols.push({ j, req: l.req, need: l.needT })));
+      const totalNeed = cols.reduce((a, c) => a + c.need, 0);
+      imps.forEach(x => rows.push({ i: x, m: P.node[x].material, sup: totalNeed, imp: true }));
+      const cost = new Float64Array(rows.length * cols.length);
+      rows.forEach((r, a) => cols.forEach((c, b) => { cost[a * cols.length + b] = (M.acc[c.req] && M.acc[c.req][r.m]) || !M.a2 ? (r.imp ? 1e6 : 0) + Math.abs(P.mid[r.i] - P.mid[c.j]) / 1000 : Infinity; }));
+      const f = minCostFlow(rows.map(r => r.sup), cols.map(c => c.need), cost);
+      imps.forEach(x => {
+        let b = 0; rows.forEach((r, a) => { if (r.i === x) for (let q = 0; q < cols.length; q++) b += f.F[a * cols.length + q]; });
+        P.qty[x] = b > EPS ? b : 0;
+        M.srcLines[x] = [{ m: P.node[x].material, t: P.qty[x] }];
+      });
+      P.srcs = P.srcs.filter(i => i < P.n || P.qty[i] > 0);
+    }
     return M;
   }
   const dist = (P, i, j) => Math.abs(P.mid[i] - P.mid[j]);
@@ -217,7 +259,7 @@
       to.push(u); cap.push(0); cst.push(-w); nxt.push(head[v]); head[v] = to.length - 1;
     };
     for (let s = 0; s < ns; s++) add(S, 1 + s, supply[s], 0);
-    for (let s = 0; s < ns; s++) for (let d = 0; d < nd; d++) add(1 + s, 1 + ns + d, Infinity, cost[s * nd + d]);
+    for (let s = 0; s < ns; s++) for (let d = 0; d < nd; d++) if (isFinite(cost[s * nd + d])) add(1 + s, 1 + ns + d, Infinity, cost[s * nd + d]); // non-finite cost = not allowed
     for (let d = 0; d < nd; d++) add(1 + ns + d, T, need[d], 0);
     const EPS = 1e-9;
     let total = 0;
@@ -275,6 +317,8 @@
       if (P.qty[i] > 0) { remSrc[i] = P.qty[i]; totalRem += P.qty[i]; totalCut += P.qty[i]; }
       else if (P.qty[i] < 0) { freeNeed[i] = -P.qty[i]; totalFill += -P.qty[i]; }
     }
+    for (const x of P.srcs) if (x >= n) remSrc[x] = P.qty[x]; // import budgets (A4): not part of the job's own cut
+    const hasImp = P.srcs.some(x => x >= n);
     const idx = {}; P.ids.forEach((id, i) => (idx[id] = i));
     const rank = new Float64Array(nn); for (let i = 0; i < nn; i++) rank[i] = i;
     const arcsBySrc = {};
@@ -306,6 +350,23 @@
       const l = lineFor(j, m), req = M.dstLines[j][l].req;
       return req === m ? needLine[j][l] : needLine[j][l] * M.occ[req] / M.occ[m];
     }
+    // A4: daily tonnage used at each gate
+    const nodeDay = new Int32Array(nn).fill(-1), nodeUsed = new Float64Array(nn), nodeTot = new Float64Array(nn);
+    const nodeAvail = (x, day) => { if (nodeDay[x] !== day) { nodeDay[x] = day; nodeUsed[x] = 0; } return (+P.node[x].dailyT > 0 ? +P.node[x].dailyT : Infinity) - nodeUsed[x]; };
+    const exportsList = P.nodeIdx.filter(x => P.kind[x] === 2);
+    // Nearest export that takes material m and still has room today (A4). full = an accepting export exists but is full today.
+    function pickExport(i, m, day) {
+      let bx = -1, bd = Infinity, full = false;
+      for (const x of exportsList) {
+        const acc = P.node[x].accepts || [];
+        if (acc.length && acc.indexOf(m) < 0) continue;
+        if (nodeAvail(x, day) <= EPS) { full = true; continue; }
+        const dd = Math.abs(P.mid[i] - P.mid[x]);
+        if (dd < bd) { bd = dd; bx = x; }
+      }
+      return { x: bx, full };
+    }
+    const anyNeed = m => P.dsts.some(j => canTake(j, m));
     const ordCache = {}, ptrCache = {};
     function orderFor(i, m) { // nearest fill first; with A2 only fills that accept m, and fills asking for exactly m before the rest
       if (!(M && M.a2)) return P.destOrder[i];
@@ -419,7 +480,7 @@
     }
 
     for (d = 0; d < horizon; d++) {
-      if (totalRem <= EPS) break;
+      if (totalRem <= EPS && !(hasImp && P.srcs.some(x => x >= n && remSrc[x] > EPS) && P.dsts.some(j => freeNeed[j] > EPS))) break;
       if (d > maxOpen + 14 && d - lastMove > 14) { stuck = true; break; }
       const dow = dowOf(P.startDay + d);
       const base = d * DAY;
@@ -440,6 +501,7 @@
         });
         for (const i of P.srcs) {
           rates[i] = null;
+          if (i >= n) { if (remSrc[i] > 0 && P.workDays[i][dow]) { slots[i].fill(P.ws[i]); active.push(i); blocked[i] = 0; } continue; } // import gates load on their own
           if (!(remSrc[i] > 0 && P.workDays[i][dow]) || !per[i]) continue;
           const ks = per[i], sl = new Int32Array(ks.length), rt = new Float64Array(ks.length);
           ks.forEach((k, q) => {
@@ -478,10 +540,15 @@
           if (c >= sl.length) { remSrc[best] = 0; continue; }
           lineIdx = c; capT = Math.min(capT, sl[c]); mat = M.srcLines[best][c].m;
           if (M.a1) capT = Math.min(capT, ty.body * M.rho[mat] / M.bulk[mat]);
+          if (best >= n) { const av = nodeAvail(best, d); if (av <= EPS) { blocked[best] = 1; continue; } capT = Math.min(capT, av); } // import: daily limit
         }
-        const svc = svcMin(best, bestSlot, Math.min(capT, remSrc[best]));
+        const svc = best >= n ? Math.max(1, Math.round(+P.node[best].roundTripMin || 0)) : svcMin(best, bestSlot, Math.min(capT, remSrc[best]));
         const departT = bestT + svc;
-        const pk = pick(best, departT, d, ty, svc, capT, mat);
+        let pk = pick(best, departT, d, ty, svc, capT, mat);
+        if (!pk && M && M.a4 && best < n && !anyNeed(mat)) { // nothing needs this material: ship it off site if an export takes it (A4)
+          const e = pickExport(best, mat, d);
+          if (e.x >= 0) pk = { j: e.x, arc: null };
+        }
         if (!pk || pk.wait !== undefined) {
           // Nowhere to tip yet. If a destination opens at midnight and a long trip can still reach it
           // after loading later today, hold this source until then; otherwise it is done for today.
@@ -492,12 +559,13 @@
           continue;
         }
         const j = pk.j;
-        let tonnes = Math.min(capT, remSrc[best], M ? takeCap(j, mat) : freeNeed[j]);
+        let tonnes = j >= n ? Math.min(capT, remSrc[best], nodeAvail(j, d)) : Math.min(capT, remSrc[best], M ? takeCap(j, mat) : freeNeed[j]);
         let dLine = -1, consume = 0;
         if (pk.arc) tonnes = Math.min(tonnes, pk.arc.rem);
         const arrAbs = base + departT + tripL(P, ty, best, j);
         let tipAbs = arrAbs;
-        if (recv) { // queue for a tipping bay, then tip at the section's receiving rate
+        if (j >= n && P.kind[j] === 2) tipAbs = arrAbs + Math.max(0, Math.round(+P.node[j].roundTripMin || 0)); // export: the lorry is back at the gate after its off-site round trip
+        else if (recv) { // queue for a tipping bay, then tip at the section's receiving rate
           const bf = bayFree[j] || (bayFree[j] = new Float64Array(recv.bays[j]));
           let bi = 0; for (let k = 1; k < bf.length; k++) if (bf[k] < bf[bi]) bi = k;
           const ts = Math.max(arrAbs, bf[bi]);
@@ -505,16 +573,18 @@
           tipAbs = ts + dur; bf[bi] = tipAbs; tipWaitMin += ts - arrAbs; if (ts - arrAbs > tipWaitMax) tipWaitMax = ts - arrAbs;
         }
         consume = tonnes;
-        if (M && M.a2) { // place it in its fill line; a different class takes up space in proportion to its compacted volume
+        if (best >= n) { nodeUsed[best] += tonnes; nodeTot[best] += tonnes; }
+        if (j >= n) { nodeUsed[j] += tonnes; nodeTot[j] += tonnes; consume = 0; }
+        if (M && M.a2 && j < n) { // place it in its fill line; a different class takes up space in proportion to its compacted volume
           dLine = lineFor(j, mat); const req = M.dstLines[j][dLine].req;
           if (req !== mat) consume = tonnes * M.occ[mat] / M.occ[req];
           needLine[j][dLine] -= consume; if (needLine[j][dLine] < EPS) needLine[j][dLine] = 0;
         }
-        remSrc[best] -= tonnes; freeNeed[j] -= consume; totalRem -= tonnes;
-        if (M) { const sl = srcLeft[best]; sl[lineIdx] -= tonnes; if (sl[lineIdx] < EPS) sl[lineIdx] = 0; ML.mat.push(mat); ML.sline.push(lineIdx); ML.dline.push(dLine); }
+        remSrc[best] -= tonnes; if (j < n) freeNeed[j] -= consume; if (best < n) totalRem -= tonnes;
+        if (M) { const sl = srcLeft[best]; sl[lineIdx] -= tonnes; if (sl[lineIdx] < EPS) sl[lineIdx] = 0; if (!noLog) { ML.mat.push(mat); ML.sline.push(lineIdx); ML.dline.push(dLine); } }
         if (pk.arc) pk.arc.rem -= tonnes;
-        if (remSrc[best] < EPS) { totalRem -= remSrc[best]; remSrc[best] = 0; }
-        if (freeNeed[j] < EPS) freeNeed[j] = 0;
+        if (remSrc[best] < EPS) { if (best < n) totalRem -= remSrc[best]; remSrc[best] = 0; }
+        if (j < n && freeNeed[j] < EPS) freeNeed[j] = 0;
         slots[best][bestSlot] = departT;
         let bs = base + bestT;
         if (fleetOn) {
@@ -538,7 +608,7 @@
     for (let k = 0; k <= lastDay; k++) if (daily[k] === undefined) daily[k] = 0;
 
     // ----- summary -----
-    const unplacedSurplus = P.srcs.reduce((s, i) => s + remSrc[i], 0);
+    const unplacedSurplus = P.srcs.reduce((s, i) => s + (i < n ? remSrc[i] : 0), 0);
     const unfilled = P.dsts.reduce((s, j) => s + freeNeed[j], 0);
     const complete = unplacedSurplus <= EPS && unfilled <= EPS && (totalCut > 0 || totalFill > 0);
     let span = 0, idle = 0;
@@ -560,8 +630,14 @@
     let msum = null;
     if (M) {
       const unplacedByMat = {};
-      for (const i of P.srcs) srcLeft[i].forEach((t, l) => { if (t > EPS) unplacedByMat[M.srcLines[i][l].m] = (unplacedByMat[M.srcLines[i][l].m] || 0) + t; });
-      msum = { placedT: tonnesMoved, unplacedByMat };
+      for (const i of P.srcs) if (i < n) srcLeft[i].forEach((t, l) => { if (t > EPS) unplacedByMat[M.srcLines[i][l].m] = (unplacedByMat[M.srcLines[i][l].m] || 0) + t; });
+      msum = { placedT: tonnesMoved, unplacedByMat, importT: 0, exportT: 0, importCost: 0, exportCost: 0, nodes: [] };
+      for (const x of P.nodeIdx) {
+        const r = P.node[x], cost = nodeTot[x] * (+r.costPerT || 0);
+        if (P.kind[x] === 1) { msum.importT += nodeTot[x]; msum.importCost += cost; }
+        if (P.kind[x] === 2) { msum.exportT += nodeTot[x]; msum.exportCost += cost; }
+        msum.nodes.push({ id: P.ids[x], name: P.names[x], kind: P.kind[x], tonnes: nodeTot[x], cost });
+      }
     }
     if (noLog) return { P, log: null, n: moves, daily, sections: null, summary, msum };
 

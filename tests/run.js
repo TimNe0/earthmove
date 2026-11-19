@@ -88,7 +88,8 @@ function audit(name, scn) {
     if (Math.floor(L.tip[k] / 1440) < P.openDay[j]) bad++;
     const maxPay = Math.max(P.loadT, ...P.cfg.types.map(t => t.payload).filter(isFinite));
     if (L.t[k] > maxPay + 1e-9 || L.t[k] <= 0) bad++;
-    if (!P.cfg.exc && P.cfg.uExc === 1 && L.depart[k] - L.start[k] !== P.loadMin) bad++;
+    if (i >= P.n) { if (L.depart[k] - L.start[k] !== Math.max(1, Math.round(+P.node[i].roundTripMin || 0))) bad++; } // an import gate: loading takes the supplier round trip
+    else if (!P.cfg.exc && P.cfg.uExc === 1 && L.depart[k] - L.start[k] !== P.loadMin) bad++;
     perDay[day] = (perDay[day] || 0) + 1;
     (slotEvents[i] = slotEvents[i] || []).push([L.start[k], 1], [L.depart[k], -1]);
   }
@@ -729,6 +730,65 @@ console.log('\n36. A2 MATERIAL CLASSES: loads carry one class and only go where 
   const bk = Engine.simulate(blk);
   ok(bk.n === 0 && near(bk.msum.unplacedByMat.general, 60), 'top-down digging: general below an unplaceable topsoil line is also stuck');
   ok(Model.validate(blk).some(x => /blocks the 60/.test(x.text)), 'and the warning says how much it blocks');
+}
+
+console.log('\n37. A4 OFF-SITE IMPORT AND EXPORT: surplus ships out, shortfall comes in, both within daily limits');
+{
+  const near = (x, y) => Math.abs(x - y) < 1e-9;
+  const hmDay = (k, r) => Math.floor(r.log.tip[k] / 1440) + ' ' + hhmm(r.log.tip[k]);
+  // tiny(): a cut 0-1000 (mid 500), b fill 1000-2000 (mid 1500); 5 kph, 10 min loading, 20 t loads from 07:00.
+  // EXPORT. Cut 140 t, fill 100 t, an export gate at chainage 0 (500 m from a = 6 min) with a 30 min round trip, 5 GBP a tonne.
+  const exp = (daily, cut) => {
+    const sc = tiny(); Model.setQty(sc.sections[0], cut || 140);
+    return withMods(sc, { A4: true }, { A4: { points: [{ id: 'p1', name: 'Gate', kind: 'export', chainageM: 0, dailyT: daily, costPerT: 5, roundTripMin: 30 }] } });
+  };
+  const e = audit('A4 export', exp(1e6)), tips = Array.from({ length: e.n }, (_, k) => hhmm(e.log.tip[k]));
+  // hand: loads 1-5 fill b. Loads 6 and 7 start 07:50 and 08:00, leave 08:00 and 08:10, reach the gate 6 min later (08:06, 08:16)
+  // and are back after the 30 min round trip: 08:36 and 08:46.
+  ok(e.n === 7 && e.log.dst.join() === '1,1,1,1,1,2,2', 'seven loads: five to the fill, two to the export gate');
+  ok(tips[5] === '08:36' && tips[6] === '08:46' && hhmm(e.log.start[5]) === '07:50', 'hand: export loads start 07:50, tip 08:36 and 08:46 (sim ' + tips[5] + ', ' + tips[6] + ')');
+  ok(e.msum.exportT === 40 && e.msum.exportCost === 200 && e.summary.complete, '40 t exported at 5 GBP a tonne = 200 GBP, job complete');
+  ok(near(e.summary.tonneKm, 120), 'hand: 5 x 20 t x 1.0 km + 2 x 20 t x 0.5 km = 120 tonne-km (sim ' + e.summary.tonneKm + ')');
+  // a daily limit of 20 t: the second export load waits until Tuesday 07:00 (start), tipping 07:10 + 6 + 30 = 07:46
+  const lim = audit('A4 export, 20 t a day', exp(20)), lt = k => hmDay(k, lim);
+  ok(lim.n === 7 && lt(5) === '0 08:36' && lim.log.start[6] === 1440 + 420 && lt(6) === '1 07:46', 'daily limit 20 t: load 7 starts Tuesday 07:00 and tips 07:46 (sim ' + lt(6) + ')');
+  // surplus is only exported when the fill is full: with no surplus there is no export and the result equals plain core
+  const none = Engine.simulate(exp(1e6, 100)), plain = Engine.simulate(tiny());
+  ok(none.log.t.join() === plain.log.t.join() && none.log.tip.join() === plain.log.tip.join() && none.msum.exportT === 0, 'cut equal to fill: nothing is exported and the timeline equals core');
+  // an export that takes only rock leaves other surplus on site
+  const rk = exp(1e6); rk.modules.A4.points[0].accepts = ['rock'];
+  ok(Engine.simulate(rk).summary.unplacedSurplus === 40 && Engine.simulate(rk).n === 5, 'an export that only takes rock does not take the 40 t of general surplus');
+  // with classes: general goes to the fill, rock (no fill takes it) goes to the export
+  const cl = exp(1e6, 100); cl.setup.modules.A2 = true;
+  cl.sections[0].lines = [{ material: 'general', qty: 60 }, { material: 'rock', qty: 40 }]; cl.sections[1].lines = [{ material: 'general', qty: -60 }];
+  const cr = audit('A4 + A2 rock exported', Model.normalise(cl));
+  ok(cr.log.dst.join() === '1,1,1,2,2' && cr.mlog.mat.join() === 'general,general,general,rock,rock' && hhmm(cr.log.tip[3]) === '08:16' && hhmm(cr.log.tip[4]) === '08:26', 'general fills b, then the rock goes off site: tips 08:16 and 08:26');
+
+  // IMPORT. Cut 60 t, fill 100 t, an import gate at chainage 2000 (500 m from b = 6 min), 40 min round trip, 2 lanes, 8 GBP a tonne.
+  const imp = (daily, cut) => {
+    const sc = tiny(); Model.setQty(sc.sections[0], cut || 60);
+    return withMods(sc, { A4: true }, { A4: { points: [{ id: 'q1', name: 'Quarry', kind: 'import', material: 'general', chainageM: 2000, dailyT: daily, costPerT: 8, roundTripMin: 40, lanes: 2 }] } });
+  };
+  const im = audit('A4 import', imp(1e6)), it = Array.from({ length: im.n }, (_, k) => hhmm(im.log.tip[k])).sort();
+  // hand: shortfall = 100 - 60 = 40 t = two 20 t import loads. They load from 07:00 on two lanes, leave 07:40, tip 6 min later: 07:46 and 07:46.
+  // The cut loads tip 07:22, 07:32, 07:42.
+  ok(im.n === 5 && it.join() === '07:22,07:32,07:42,07:46,07:46', 'hand: tips 07:22 07:32 07:42 and two import loads at 07:46 (sim ' + it.join(' ') + ')');
+  ok(im.msum.importT === 40 && im.msum.importCost === 320 && im.summary.complete && im.summary.totalCut === 60, 'imports cover only the 40 t shortfall (320 GBP), job complete');
+  const big = Engine.simulate(imp(1e6, 100));
+  ok(big.n === 5 && big.msum.importT === 0 && big.log.t.join() === plain.log.t.join(), 'cut equal to fill: the import budget is 0 and nothing is imported');
+  // daily limit of 20 t: one import load on Monday, the second on Tuesday 07:00, tipping 07:46
+  const il = audit('A4 import, 20 t a day', imp(20)), last = il.n - 1;
+  ok(il.summary.complete && Math.floor(il.log.tip[last] / 1440) === 1 && hhmm(il.log.tip[last]) === '07:46', 'import daily limit 20 t: the second load comes Tuesday and tips 07:46');
+  // a section's own surplus is never imported over: the import is only used up to the shortfall even when it is nearer
+  ok(Model.validate(exp(1e6)).filter(x => x.level === 'error').length === 0, 'valid A4 settings raise no errors');
+  // gates sit on the same travel-time axis as sections when B3 is on: equal loaded and empty speeds must reproduce the plain result
+  const b3 = exp(1e6); b3.setup.modules.B3 = true; Object.assign(b3.modules.B3, { loadedKph: 5, emptyKph: 5 });
+  const b3r = audit('A4 export with B3', b3);
+  ok(b3r.log.tip.join() === e.log.tip.join() && b3r.log.dst.join() === e.log.dst.join(), 'B3 at the same speed gives identical export timings');
+  // a fixed fleet drives back to the loader from the gate where it last tipped
+  const fl = exp(1e6); fl.setup.modules.B1 = true; fl.modules.B1.fleet = 2;
+  const flr = audit('A4 export with a 2-lorry fleet', fl);
+  ok(flr.summary.complete && flr.msum.exportT === 40, 'a 2-lorry fleet still moves and exports everything');
 }
 
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
