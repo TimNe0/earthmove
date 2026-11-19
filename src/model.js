@@ -6,12 +6,21 @@
   'use strict';
   const VERSION = 1;
 
+  // A material is also a placement class (A2). Density is t per m3, bulking is loose/bank volume, compaction is compacted/bank volume.
+  function defaultMaterial(st, id) {
+    return { id: id || 'general', name: id && id !== 'general' ? id : 'General fill', colour: '#a0855b',
+             density: +(st && st.density) > 0 ? +st.density : 1.8, bulking: 1.25, compaction: 0.9 };
+  }
+  const MOD_IDS = ['A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6'];
+
   function defaults() {
+    const settings = { startDate: '2027-01-11', speedKph: 5, loadTonnes: 20, loadMinutes: 10, maxMovesPerDay: 200,
+                  units: 'tonnes', density: 1.8 };
     return {
       version: VERSION, name: 'New scenario',
       setup: { level: 'simple', modules: {} },
-      settings: { startDate: '2027-01-11', speedKph: 5, loadTonnes: 20, loadMinutes: 10, maxMovesPerDay: 200,
-                  units: 'tonnes', density: 1.8 },   // units: 'tonnes' | 'm3'. loadTonnes and section quantities are held in this unit; density is t per m3
+      settings,   // units: 'tonnes' | 'm3'. loadTonnes and section quantities are held in this unit; density is t per m3
+      materials: [defaultMaterial(settings)],
       sections: [],
       modules: {},          // per-module parameter store; kept when a module is switched off
       ui: { timeChainage: { minimised: false, height: 280, timeDown: true, spanDays: 0, startDay: 0, follow: true } }, // saved view state (E8)
@@ -25,6 +34,11 @@
   function moduleDefaults(st) {
     const uf = st && st.units === 'm3' && +st.density > 0 ? +st.density : 1, spd = +(st && st.speedKph) || 5, ld = +(st && st.loadTonnes) || 20;
     return {
+      A1: { bodyM3: 14 },
+      A2: { accept: {} },
+      A3: {},
+      A4: { points: [] },
+      A5: { stockpiles: [] },
       B1: { fleet: 60, depotOn: false, depotM: 0, depotLeave: '07:00' },
       B2: { types: [{ id: 'ty1', name: 'Standard lorry', payload: ld, speedLoaded: spd, speedEmpty: spd, qty: 60, publicRoad: true }] },
       B3: { loadedKph: spd, emptyKph: Math.round(spd * 1.2 * 10) / 10, mode: 'site', bySection: {} },
@@ -68,6 +82,21 @@
       if (!Array.isArray(r.lines) || !r.lines.length) r.lines = [{ material: 'general', qty: 0 }];
       if (!Array.isArray(r.workDays) || r.workDays.length !== 7) r.workDays = [1, 1, 1, 1, 1, 0, 0];
       return r;
+    });
+    // materials: every line's material must exist, ids are unique, and a class always accepts itself (A2)
+    const seen = {};
+    o.materials = (Array.isArray(o.materials) && o.materials.length ? o.materials : d.materials).map(m => Object.assign(defaultMaterial(o.settings, m && m.id), m))
+      .filter(m => (seen[m.id] ? false : (seen[m.id] = true)));
+    o.sections.forEach(s => s.lines.forEach(l => {
+      if (!l.material) l.material = 'general';
+      if (!seen[l.material]) { seen[l.material] = true; o.materials.push(defaultMaterial(o.settings, l.material)); }
+    }));
+    const a2 = o.modules.A2; a2.accept = a2.accept || {};
+    o.materials.forEach(m => { a2.accept[m.id] = Object.assign({}, a2.accept[m.id] || {}); a2.accept[m.id][m.id] = true; });
+    ['A4:points', 'A5:stockpiles'].forEach(k => {
+      const [mod, f] = k.split(':'); const m = o.modules[mod];
+      if (!Array.isArray(m[f])) m[f] = [];
+      m[f].forEach(x => { if (!x.id) x.id = newId(); });
     });
     return o;
   }
@@ -149,6 +178,36 @@
         });
         scn.sections.forEach(s => { if (secQty(s) > 0 && !assigned[s.id]) add('error', (s.name || 'A section') + ' has soil to remove but no excavator is ever assigned to it, so it can never be loaded.', mc('addMachine')); });
       }
+    } else if (id === 'A1') {
+      if (!pos(m.bodyM3)) add('error', 'The lorry body volume must be more than 0 m\u00b3.', mc('bodyM3'));
+      (scn.materials || []).forEach(x => {
+        const nm = x.name || x.id;
+        if (!pos(x.bulking)) add('error', nm + ': the bulking factor must be more than 0.', mc(x.id + ':bulking'));
+        else if (+x.bulking < 1) add('warn', nm + ': a bulking factor below 1 means the soil shrinks when dug. That is unusual.', mc(x.id + ':bulking'));
+        if (!pos(x.compaction)) add('error', nm + ': the compaction factor must be more than 0.', mc(x.id + ':compaction'));
+      });
+    } else if (id === 'A2') {
+      scn.sections.forEach(s => {
+        if (s.lines.some(l => +l.qty > 0) && s.lines.some(l => +l.qty < 0)) add('warn', (s.name || 'A section') + ' has both cut and fill lines. Split it into two sections so soil classes can be placed correctly.', { sec: s.id, field: 'qty' });
+      });
+    } else if (id === 'A3') {
+      (scn.materials || []).forEach(x => { if (!pos(x.density)) add('error', (x.name || x.id) + ': the density must be more than 0 tonnes per m\u00b3.', mc(x.id + ':density')); });
+    } else if (id === 'A4' || id === 'A5') {
+      const tot = scn.sections.reduce((a, x) => a + (+x.lengthM || 0), 0), A4 = id === 'A4';
+      (A4 ? m.points : m.stockpiles || []).forEach(x => {
+        const nm = x.name || (A4 ? 'An access point' : 'A stockpile');
+        if (!x.name) add('warn', nm + ' has no name.', mc(x.id + ':name'));
+        if (!(+x.chainageM >= 0 && +x.chainageM <= tot)) add('error', nm + ': the chainage must be between 0 and ' + Math.round(tot) + ' m, the length of the road.', mc(x.id + ':chainageM'));
+        if (A4) {
+          if (!pos(x.dailyT)) add('error', nm + ': the daily limit must be more than 0 tonnes.', mc(x.id + ':dailyT'));
+          if (!(+x.costPerT >= 0)) add('error', nm + ': the cost per tonne cannot be negative.', mc(x.id + ':costPerT'));
+          if (!(+x.roundTripMin >= 0)) add('error', nm + ': the round-trip time cannot be negative.', mc(x.id + ':roundTripMin'));
+          if (x.kind === 'import' && !(scn.materials || []).some(y => y.id === x.material)) add('error', nm + ': the material it supplies does not exist.', mc(x.id + ':material'));
+        } else {
+          if (!pos(x.capacityT)) add('error', nm + ': the capacity must be more than 0 tonnes.', mc(x.id + ':capacityT'));
+          if (!(+x.handleCostPerT >= 0)) add('error', nm + ': the double-handling cost cannot be negative.', mc(x.id + ':handleCostPerT'));
+        }
+      });
     } else if (id === 'B6') {
       [['lorries', 'Lorry'], ['excavators', 'Excavator'], ['receiving', 'Receiving plant']].forEach(([k, nm]) => {
         if (!(+m[k] > 0 && +m[k] <= 100)) add('error', nm + ' availability must be between 1 and 100 percent.', mc(k));
@@ -156,7 +215,7 @@
     }
     return out;
   }
-  ['B1', 'B2', 'B3', 'B4', 'B5', 'B6'].forEach(id => { if (Modules.byId[id]) Modules.byId[id].validate = scn => moduleIssues(scn, id); });
+  MOD_IDS.forEach(id => { if (Modules.byId[id]) Modules.byId[id].validate = scn => moduleIssues(scn, id); });
 
   // Plain-English problems. cell = where to jump to fix it.
   function validate(scn) {
@@ -188,7 +247,7 @@
       if (s.openFrom && Engine.parseISO(s.openFrom) === null) add('error', nm + ': the earliest tipping date is not a valid date.', c('openFrom'));
       if (q > 0 && !s.workDays.some(Boolean)) add('error', nm + ' has soil to remove but no working days are ticked, so it can never be loaded.', c('workDays'));
     });
-    ['B1', 'B2', 'B3', 'B4', 'B5', 'B6'].forEach(id => { if (scn.setup.modules[id]) moduleIssues(scn, id).forEach(x => out.push(x)); });
+    MOD_IDS.forEach(id => { if (scn.setup.modules[id]) moduleIssues(scn, id).forEach(x => out.push(x)); });
     if (!cut) add('warn', 'No section has surplus soil. There is nothing to move.');
     if (!fill) add('warn', 'No section needs fill. Surplus soil has nowhere to go.');
     return out;
@@ -238,5 +297,5 @@
   }
   const EXAMPLES = { simple: exampleSimple, modules: exampleModules };
 
-  return { VERSION, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, exampleSimple, exampleModules };
+  return { VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, exampleSimple, exampleModules };
 });

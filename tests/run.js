@@ -525,6 +525,46 @@ console.log('\n31. E8 VIEW STATE IS SAVED IN THE SCENARIO FILE');
   ok(Model.normalise(old).ui.timeChainage.height === 280 && Model.normalise(old).ui.timeChainage.minimised === false, 'a file saved before E8 loads with the default view');
 }
 
+console.log('\n32. PHASE 4 MODEL: materials and A1-A5 settings load, persist and validate');
+{
+  const old = Model.normalise({ name: 'old', sections: [{ name: 'a', lengthM: 500, lines: [{ material: 'general', qty: 100 }] }] });
+  ok(old.materials.length === 1 && old.materials[0].id === 'general', 'an older file gets one default material');
+  ok(old.modules.A1.bodyM3 === 14 && old.modules.A4.points.length === 0 && old.modules.A5.stockpiles.length === 0, 'A1-A5 defaults are filled in');
+  ok(old.modules.A2.accept.general.general === true, 'a class always accepts itself');
+  const cl = Model.normalise({ sections: [{ name: 'a', lengthM: 500, lines: [{ material: 'general', qty: 50 }, { material: 'clay', qty: 50 }] }] });
+  ok(cl.materials.map(m => m.id).join() === 'general,clay' && cl.modules.A2.accept.clay.clay === true, 'a material used by a line is created');
+  ok(cl.materials[1].density === cl.settings.density, 'its density defaults to the site density');
+  const dup = Model.normalise({ materials: [{ id: 'x' }, { id: 'x' }], sections: [] });
+  ok(dup.materials.length === 1, 'duplicate material ids are dropped');
+
+  const sc = withMods(Model.exampleSimple(), { A1: true, A2: true, A3: true, A4: true, A5: true }, {
+    A1: { bodyM3: 12 }, A4: { points: [{ id: 'p1', name: 'Gate', kind: 'export', chainageM: 100, dailyT: 500, costPerT: 5, roundTripMin: 30 }] },
+    A5: { stockpiles: [{ id: 'k1', name: 'Dump', chainageM: 200, capacityT: 1000, handleCostPerT: 2 }] } });
+  const back = Model.normalise(JSON.parse(JSON.stringify(sc)));
+  ok(JSON.stringify(back.modules.A4) === JSON.stringify(sc.modules.A4) && back.modules.A1.bodyM3 === 12 && back.modules.A5.stockpiles[0].capacityT === 1000, 'A1-A5 settings survive save and load');
+  sc.setup.modules.A4 = false; sc.setup.modules.A4 = true;
+  ok(sc.modules.A4.points.length === 1, 'switching A4 off and on keeps its entries');
+  ok(Model.validate(sc).filter(x => x.level === 'error').length === 0, 'valid A settings give no errors');
+  const noErr = Engine.simulate(sc).log.t.length;
+  ok(Engine.simulate(Model.exampleSimple()).log.t.length === noErr, 'the engine ignores A settings for now (no coupling yet)');
+
+  const bad = (mod, edit, re, field) => {
+    const s = withMods(Model.exampleSimple(), { [mod]: true }, {}); edit(s);
+    const hit = Model.validate(s).find(x => re.test(x.text));
+    ok(hit && hit.cell && hit.cell.mod === mod && (!field || hit.cell.field === field), mod + ': ' + re.source + (hit ? '' : ' (not reported)'));
+  };
+  bad('A1', s => (s.modules.A1.bodyM3 = 0), /body volume/, 'bodyM3');
+  bad('A1', s => (s.materials[0].bulking = 0), /bulking factor must be more than 0/, 'general:bulking');
+  bad('A1', s => (s.materials[0].compaction = -1), /compaction factor/, 'general:compaction');
+  bad('A3', s => (s.materials[0].density = 0), /density must be more than 0/, 'general:density');
+  bad('A4', s => (s.modules.A4.points = [{ id: 'p', name: 'G', kind: 'export', chainageM: 99999, dailyT: 5, costPerT: 0, roundTripMin: 0 }]), /chainage must be between/, 'p:chainageM');
+  bad('A4', s => (s.modules.A4.points = [{ id: 'p', name: 'G', kind: 'import', material: 'nope', chainageM: 0, dailyT: 5, costPerT: 0, roundTripMin: 0 }]), /material it supplies/, 'p:material');
+  bad('A5', s => (s.modules.A5.stockpiles = [{ id: 'k', name: 'D', chainageM: 0, capacityT: 0, handleCostPerT: 0 }]), /capacity must be more than 0/, 'k:capacityT');
+  const mixed = withMods(Model.exampleSimple(), { A2: true }, {});
+  mixed.sections[0].lines.push({ material: 'general', qty: 10 });
+  ok(Model.validate(mixed).some(x => x.level === 'warn' && /Split it into two sections/.test(x.text)), 'A2: a section with both cut and fill lines is flagged');
+}
+
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
 {
   const a = Model.exampleSimple(); a.setup.level = 'custom'; a.modules.B1 = { site: { fleet: 12 }, mode: 'site' };
