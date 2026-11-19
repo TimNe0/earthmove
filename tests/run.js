@@ -565,6 +565,33 @@ console.log('\n32. PHASE 4 MODEL: materials and A1-A5 settings load, persist and
   ok(Model.validate(mixed).some(x => x.level === 'warn' && /Split it into two sections/.test(x.text)), 'A2: a section with both cut and fill lines is flagged');
 }
 
+console.log('\n33. PHASE 4 ENGINE SCAFFOLD: node arrays exist, the material layer is built only when an A module is on, and nothing changes');
+{
+  const P = Engine.prepare(Model.exampleSimple());
+  ok(P.nn === P.n && P.kind.length === P.n && P.qty.length === P.nn, 'no nodes yet: nn equals the section count and arrays are sized by nn');
+  ok(P.cfg.mat === null, 'all A modules off: no material layer');
+  const sc = Model.normalise({ sections: [] });
+  const mk = (id, len, lines) => { const x = Model.newSection(0); x.id = id; x.name = id; x.lengthM = len; x.lines = lines; x.maxLoaders = 1; return x; };
+  sc.sections = [mk('a', 1000, [{ material: 'rock', qty: 60 }, { material: 'clay', qty: 40 }]), mk('b', 1000, [{ material: 'clay', qty: -70 }, { material: 'rock', qty: -30 }])];
+  const on = withMods(Model.normalise(sc), { A1: true, A2: true });
+  on.modules.A2.accept.clay = { clay: true, rock: true };
+  on.materials.find(m => m.id === 'rock').density = 2.4; on.materials.find(m => m.id === 'clay').density = 2.0;
+  const M = Engine.prepare(on).cfg.mat;
+  ok(M && JSON.stringify(M.srcLines[0]) === '[{"m":"rock","t":60},{"m":"clay","t":40}]', 'cut lines are kept in dig order, in tonnes');
+  ok(JSON.stringify(M.dstLines[1]) === '[{"req":"clay","needT":70},{"req":"rock","needT":30}]' && M.srcLines[1].length === 0, 'fill lines carry their required class and need');
+  ok(M.acc.clay.rock === true && M.acc.clay.clay === true && M.acc.rock.clay === false && M.acc.rock.rock === true, 'A2 table: clay fill takes rock, rock fill refuses clay, each class takes itself');
+  ok(Math.abs(M.occ.rock - 0.9 / 1.8) < 1e-12, 'A1 on, A3 off: occupied space per tonne is compaction / site density');
+  const A3 = withMods(on, { A3: true });
+  ok(Math.abs(Engine.prepare(A3).cfg.mat.occ.rock - 0.9 / 2.4) < 1e-12, 'A3 on: per-material density is used');
+  const open = withMods(Model.exampleSimple(), { A2: true });
+  ok(Engine.prepare(open).cfg.mat.acc.general.general === true, 'A2 with one class: it accepts itself');
+  const h = s => crypto.createHash('sha1').update(JSON.stringify([s.log.src, s.log.dst, s.log.start, s.log.tip, s.log.t])).digest('hex').slice(0, 12);
+  const base = h(Engine.simulate(Model.exampleSimple()));
+  ok(base === JSON.parse(require('fs').readFileSync(__dirname + '/snapshot.json')).hash, 'baseline hash matches the stored snapshot');
+  ['A1', 'A2', 'A3', 'A4', 'A5'].forEach(m => ok(h(Engine.simulate(withMods(Model.exampleSimple(), { [m]: true }))) === base, m + ' on at defaults reproduces the core hash'));
+  ok(h(Engine.simulate(withMods(Model.exampleSimple(), { A1: true, A2: true, A3: true, A4: true, A5: true }))) === base, 'all of A1-A5 on reproduces the core hash');
+}
+
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
 {
   const a = Model.exampleSimple(); a.setup.level = 'custom'; a.modules.B1 = { site: { fleet: 12 }, mode: 'site' };

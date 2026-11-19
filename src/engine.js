@@ -52,16 +52,16 @@
     return q;
   }
   function prepare(scn) {
-    const st = scn.settings, secs = scn.sections, n = secs.length;
+    const st = scn.settings, secs = scn.sections, n = secs.length, nn = n; // nn = sections + off-site/stockpile nodes (none yet)
     const startDay = parseISO(st.startDate);
     // Quantities are stored in the unit the user chose (settings.units) and converted to tonnes here.
     const uf = st.units === 'm3' && +st.density > 0 ? +st.density : 1;
     const P = {
-      n, startDay, unitF: uf,
+      n, nn, kind: new Uint8Array(nn), startDay, unitF: uf, // kind: 0 section, 1 import, 2 export, 3 stockpile
       speed: +st.speedKph, loadT: +st.loadTonnes * uf, loadMin: Math.round(+st.loadMinutes), cap: Math.floor(+st.maxMovesPerDay),
       ids: [], names: [],
-      len: new Float64Array(n), chain: new Float64Array(n), mid: new Float64Array(n), qty: new Float64Array(n),
-      openDay: new Float64Array(n), ws: new Int32Array(n), we: new Int32Array(n), loaders: new Int32Array(n),
+      len: new Float64Array(nn), chain: new Float64Array(nn), mid: new Float64Array(nn), qty: new Float64Array(nn),
+      openDay: new Float64Array(nn), ws: new Int32Array(nn), we: new Int32Array(nn), loaders: new Int32Array(nn),
       workDays: [], total: 0, srcs: [], dsts: [], destOrder: []
     };
     let c = 0;
@@ -93,7 +93,7 @@
     const mods = (scn.setup && scn.setup.modules) || {}, md = scn.modules || {}, st = scn.settings, n = P.n;
     const num = (v, d) => (+v > 0 ? +v : d);
     const idx = {}; P.ids.forEach((id, i) => (idx[id] = i));
-    const c = { useFleet: false, fleetSize: 0, types: [], simple: true, recv: null, exc: null, uLorry: 1, uExc: 1, uRecv: 1 };
+    const c = { useFleet: false, fleetSize: 0, types: [], simple: true, recv: null, exc: null, uLorry: 1, uExc: 1, uRecv: 1, mat: null };
     if (mods.B6) {
       const b = md.B6 || {}, pct = v => (+v > 0 && +v <= 100 ? +v / 100 : 1);
       c.uLorry = pct(b.lorries); c.uExc = pct(b.excavators); c.uRecv = pct(b.receiving);
@@ -158,7 +158,28 @@
         }));
       }
     }
+    if (['A1', 'A2', 'A3', 'A4', 'A5'].some(k => mods[k])) c.mat = buildMat(scn, P, uf); // material layer (Phase 4); null keeps the core path untouched
     return c;
+  }
+  // Material layer inputs (A1-A5). Quantities are in tonnes. Not read by simulate() yet.
+  //   srcLines[i] = [{m, t}]  cut lines in dig order;  dstLines[j] = [{req, needT}]  fill lines;
+  //   occ[m] = compacted m3 occupied by one tonne;  acc[req][m] = true when class m may be placed in required class req.
+  function buildMat(scn, P, uf) {
+    const mods = scn.setup.modules, md = scn.modules || {}, st = scn.settings;
+    const mats = scn.materials || [], byId = {}; mats.forEach(m => (byId[m.id] = m));
+    const a1 = !!mods.A1, a3 = !!mods.A3, accept = mods.A2 ? ((md.A2 || {}).accept || {}) : null;
+    const M = { ids: mats.map(m => m.id), srcLines: [], dstLines: [], occ: {}, acc: {}, a1, a2: !!mods.A2, a3, a4: !!mods.A4, a5: !!mods.A5 };
+    mats.forEach(m => {
+      const rho = a3 && +m.density > 0 ? +m.density : (+st.density > 0 ? +st.density : 1.8);
+      M.occ[m.id] = (a1 && +m.compaction > 0 ? +m.compaction : 1) / rho;
+    });
+    mats.forEach(r => { M.acc[r.id] = {}; mats.forEach(m => (M.acc[r.id][m.id] = accept ? !!((accept[r.id] || {})[m.id]) || r.id === m.id : true)); });
+    scn.sections.forEach((s, i) => {
+      const lines = s.lines || [];
+      M.srcLines[i] = lines.filter(l => +l.qty > 0).map(l => ({ m: l.material, t: +l.qty * uf }));
+      M.dstLines[i] = lines.filter(l => +l.qty < 0).map(l => ({ req: l.material, needT: -l.qty * uf }));
+    });
+    return M;
   }
   const dist = (P, i, j) => Math.abs(P.mid[i] - P.mid[j]);
   const travelMin = (P, i, j) => Math.round(dist(P, i, j) / 1000 / P.speed * 60);
@@ -230,18 +251,18 @@
   //         noLog (fast path: summary only), horizonDays }
   function simulate(scn, opts) {
     opts = opts || {};
-    const P = opts.P || prepare(scn), n = P.n, cfg = P.cfg;
+    const P = opts.P || prepare(scn), n = P.n, nn = P.nn, cfg = P.cfg; // node-indexed arrays use nn; section loops stop at n
     const plan = opts.plan !== undefined ? opts.plan : activePlan(scn);
     const noLog = !!opts.noLog;
     const horizon = opts.horizonDays || 3650;
-    const remSrc = new Float64Array(n), freeNeed = new Float64Array(n);
+    const remSrc = new Float64Array(nn), freeNeed = new Float64Array(nn);
     let totalRem = 0, totalCut = 0, totalFill = 0;
     for (let i = 0; i < n; i++) {
       if (P.qty[i] > 0) { remSrc[i] = P.qty[i]; totalRem += P.qty[i]; totalCut += P.qty[i]; }
       else if (P.qty[i] < 0) { freeNeed[i] = -P.qty[i]; totalFill += -P.qty[i]; }
     }
     const idx = {}; P.ids.forEach((id, i) => (idx[id] = i));
-    const rank = new Float64Array(n); for (let i = 0; i < n; i++) rank[i] = i;
+    const rank = new Float64Array(nn); for (let i = 0; i < nn; i++) rank[i] = i;
     const arcsBySrc = {};
     if (plan) {
       if (plan.rank) for (const id in plan.rank) if (idx[id] !== undefined) rank[idx[id]] = plan.rank[id];
@@ -251,17 +272,17 @@
         (arcsBySrc[f] = arcsBySrc[f] || []).push({ to: t, rem: +a.tonnes });
       }
     }
-    const ptr = new Int32Array(n); // first possibly-not-full destination per source (greedy)
+    const ptr = new Int32Array(nn); // first possibly-not-full destination per source (greedy)
     const L = { src: [], dst: [], t: [], start: [], depart: [], tip: [], bs: [], lorry: [] };
-    const lastDepart = new Float64Array(n).fill(-1), lastTip = new Float64Array(n).fill(-1);
+    const lastDepart = new Float64Array(nn).fill(-1), lastTip = new Float64Array(nn).fill(-1);
     const daily = [];
     let moves = 0, tonnesMoved = 0, tonneKm = 0, endTime = 0, fleetDelayMin = 0, tipWaitMin = 0, tipWaitMax = 0;
     let maxOpen = 0;
     for (const j of P.dsts) if (P.openDay[j] > maxOpen) maxOpen = P.openDay[j];
     let lastMove = 0, stuck = false, firstDay = -1, lastDay = -1, d = 0;
-    const slots = []; for (let i = 0; i < n; i++) slots.push(new Int32Array(P.loaders[i]));
-    const rates = new Array(n).fill(null); // per-slot excavator rate (B5 individual machines)
-    const blocked = new Uint8Array(n);
+    const slots = []; for (let i = 0; i < nn; i++) slots.push(new Int32Array(P.loaders[i]));
+    const rates = new Array(nn).fill(null); // per-slot excavator rate (B5 individual machines)
+    const blocked = new Uint8Array(nn);
     const types = cfg.types, tCore = types[0];
 
     // ---- B1/B2: the lorry pool. Each lorry has a free time and a position (the section it last tipped in).
@@ -269,7 +290,7 @@
     let lFree = null, lLoc = null, lType = null, nL = 0;
     // Cached best lorry per source. A lorry's readiness for any source never improves once it has been used, so after every
     // dispatch the cached values are only lower bounds (marked stale) and a source is recomputed exactly only when it is about to win.
-    const rdyT = new Float64Array(n), rdyK = new Int32Array(n).fill(-1), rdyStale = new Uint8Array(n).fill(1);
+    const rdyT = new Float64Array(nn), rdyK = new Int32Array(nn).fill(-1), rdyStale = new Uint8Array(nn).fill(1);
     if (fleetOn) {
       nL = cfg.fleetSize; lFree = new Float64Array(nL); lLoc = new Int32Array(nL).fill(cfg.depot ? DEPOT : -1); lType = new Int32Array(nL);
       let k = 0; types.forEach((t, ti) => { for (let q = 0; q < Math.min(t.qty, 20000); q++) lType[k++] = ti; });
@@ -485,6 +506,7 @@
     }
     for (let k = 0; k < moves; k++) {
       const a = L.src[k], b = L.dst[k];
+      if (a >= n || b >= n) continue; // off-site and stockpile nodes have no section row
       sections[a].to[b] = (sections[a].to[b] || 0) + L.t[k];
       sections[b].from[a] = (sections[b].from[a] || 0) + L.t[k];
     }
@@ -498,9 +520,9 @@
   // Reads only the movement log and the section results, so the chart can never disagree with the road view or the results table.
   // A section's earthworks start at its first load (cut) or first tip (fill) and finish when it reaches level.
   function chartData(res) {
-    const L = res.log, P = res.P, n = P.n, nd = Math.floor(res.summary.endTime / DAY) + 2;
-    const first = new Float64Array(n).fill(Infinity), last = new Float64Array(n).fill(-1);
-    const daily = []; for (let i = 0; i < n; i++) daily.push(new Float32Array(nd + 1));
+    const L = res.log, P = res.P, n = P.n, nn = P.nn, nd = Math.floor(res.summary.endTime / DAY) + 2;
+    const first = new Float64Array(nn).fill(Infinity), last = new Float64Array(nn).fill(-1);
+    const daily = []; for (let i = 0; i < nn; i++) daily.push(new Float32Array(nd + 1));
     const pairs = new Map();
     for (let k = 0; k < res.n; k++) {
       const s = L.src[k], d = L.dst[k], t = L.t[k];
@@ -509,7 +531,7 @@
       if (L.tip[k] < first[d]) first[d] = L.tip[k];
       if (L.tip[k] > last[d]) last[d] = L.tip[k];
       daily[s][Math.floor(L.start[k] / DAY)] += t; daily[d][Math.floor(L.tip[k] / DAY)] += t;
-      const key = s * n + d; let pr = pairs.get(key);
+      const key = s * nn + d; let pr = pairs.get(key);
       if (!pr) pairs.set(key, (pr = { src: s, dst: d, t0: L.start[k], t1: L.tip[k], tonnes: 0, count: 0 }));
       if (L.start[k] < pr.t0) pr.t0 = L.start[k]; if (L.tip[k] > pr.t1) pr.t1 = L.tip[k];
       pr.tonnes += t; pr.count++;
@@ -531,8 +553,8 @@
   // ---------- playback helpers ----------
   // Remaining quantity per section over time, from the movement log.
   function buildSeries(res) {
-    const P = res.P, L = res.log, n = P.n;
-    const ev = []; for (let i = 0; i < n; i++) ev.push([]);
+    const P = res.P, L = res.log, n = P.n, nn = P.nn;
+    const ev = []; for (let i = 0; i < nn; i++) ev.push([]);
     for (let k = 0; k < res.n; k++) {
       ev[L.src[k]].push([L.depart[k], L.t[k]]);
       ev[L.dst[k]].push([L.tip[k], L.t[k]]);
