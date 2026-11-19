@@ -561,7 +561,7 @@
         const svc = P.kind[best] === 1 ? Math.max(1, Math.round(+P.node[best].roundTripMin || 0)) : svcMin(best, bestSlot, Math.min(capT, remSrc[best]));
         const departT = bestT + svc;
         let pk = pick(best, departT, d, ty, svc, capT, mat);
-        if (!pk && M && M.a4 && best < n && !anyNeed(mat)) { // nothing needs this material: ship it off site if an export takes it (A4)
+        if (!pk && M && M.a4 && P.kind[best] !== 1 && !anyNeed(mat)) { // nothing needs this material (on site or banked in a stockpile): ship it off site if an export takes it (A4)
           const e = pickExport(best, mat, d);
           if (e.x >= 0) pk = { j: e.x, arc: null };
         }
@@ -598,7 +598,7 @@
         if (j >= n) { consume = 0; if (P.kind[j] === 2) { nodeUsed[j] += tonnes; nodeTot[j] += tonnes; } }
         if (j < n) placedT += tonnes;
         if (P.kind[j] === 3) { stockTot[j] += tonnes; if (pk.parked) { parked[j] += tonnes; parkedT += tonnes; } else { stock[j][matIdx[mat]] += tonnes; stockIn[j] += tonnes; } }
-        if (P.kind[best] === 3) { stock[best][lineIdx] -= tonnes; if (stock[best][lineIdx] < 1e-9) stock[best][lineIdx] = 0; stockTot[best] -= tonnes; stockOut[best] += tonnes; handleCost += tonnes * (+P.node[best].handleCostPerT || 0); }
+        if (P.kind[best] === 3) { stock[best][lineIdx] -= tonnes; if (stock[best][lineIdx] < 1e-9) stock[best][lineIdx] = 0; stockTot[best] -= tonnes; if (stockTot[best] < 1e-9) stockTot[best] = 0; stockOut[best] += tonnes; handleCost += tonnes * (+P.node[best].handleCostPerT || 0); }
         if (M && M.a2 && j < n) { // place it in its fill line; a different class takes up space in proportion to its compacted volume
           dLine = lineFor(j, mat); const req = M.dstLines[j][dLine].req;
           if (req !== mat) consume = tonnes * M.occ[mat] / M.occ[req];

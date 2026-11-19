@@ -306,7 +306,32 @@
     m.B5.mode = 'byMachine'; m.B5.machines = machinesFromLoaders(o);
     return normalise(o);
   }
-  const EXAMPLES = { simple: exampleSimple, modules: exampleModules };
+  // Third example: the same 8 km road with soil types, an export gate, a quarry and a topsoil stockpile (A1-A5).
+  function exampleMaterials() {
+    const o = exampleSimple();
+    o.name = 'Materials demo: soil types, export, import and stockpile on the 8 km road';
+    o.setup.level = 'custom';
+    ['A1', 'A2', 'A3', 'A4', 'A5'].forEach(id => (o.setup.modules[id] = true));
+    o.materials = [
+      { id: 'general', name: 'General fill', colour: '#a0855b', density: 1.8, bulking: 1.25, compaction: 0.9 },
+      { id: 'topsoil', name: 'Topsoil', colour: '#5b8a3c', density: 1.6, bulking: 1.3, compaction: 0.85 },
+      { id: 'clay', name: 'Clay', colour: '#b5654a', density: 2.0, bulking: 1.3, compaction: 0.9 },
+      { id: 'rock', name: 'Rock', colour: '#6b7280', density: 2.4, bulking: 1.5, compaction: 0.85 }
+    ];
+    const L = (s, ...lines) => { o.sections.find(x => x.id === s).lines = lines.map(([material, qty]) => ({ material, qty })); };
+    L('s1', ['general', -26000]); L('s2', ['topsoil', 8000], ['clay', 30000], ['rock', 20000]); L('s3', ['clay', -21000]);
+    L('s4', ['topsoil', 4000], ['general', 40000]); L('s5', ['general', -52000]); L('s6', ['rock', 32000]); L('s7', ['rock', -17000]);
+    L('s9', ['general', -14000]); L('s10', ['clay', 26000]); L('s11', ['clay', -24000]); L('s12', ['topsoil', 10000]);
+    const m = o.modules;
+    m.A2.accept = { general: { general: true, topsoil: true, clay: true, rock: true }, topsoil: { topsoil: true }, clay: { clay: true }, rock: { rock: true } };
+    m.A4.points = [
+      { id: 'exp1', name: 'Spoil tip', kind: 'export', chainageM: 7600, accepts: [], dailyT: 1500, costPerT: 6, roundTripMin: 50, lanes: 4 },
+      { id: 'imp1', name: 'Quarry', kind: 'import', material: 'rock', chainageM: 6200, dailyT: 800, costPerT: 11.5, roundTripMin: 45, lanes: 2 }
+    ];
+    m.A5.stockpiles = [{ id: 'stk1', name: 'Topsoil bank', chainageM: 2500, capacityT: 20000, handleCostPerT: 1.8, lanes: 2 }];
+    return normalise(o);
+  }
+  const EXAMPLES = { simple: exampleSimple, modules: exampleModules, materials: exampleMaterials };
 
-  return { VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, exampleSimple, exampleModules };
+  return { VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, exampleSimple, exampleModules, exampleMaterials };
 });

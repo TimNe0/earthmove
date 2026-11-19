@@ -878,6 +878,50 @@ console.log('\n39. OPTIMISER WITH MATERIAL MODULES: plans respect the class rule
   if (sto.plan) audit('A5 optimised plan', Object.assign({}, st, { plan: sto.plan }));
 }
 
+console.log('\n40. PHASE 4 SWEEP: the Materials example, every combination of A1-A5, bookkeeping, save/load, units and the optimiser');
+{
+  const near = (x, y, tol) => Math.abs(x - y) <= (tol || 1e-6);
+  const hashOf = s => crypto.createHash('sha1').update(JSON.stringify([s.log.src, s.log.dst, s.log.start, s.log.tip, s.log.t, s.mlog ? s.mlog.mat : []])).digest('hex').slice(0, 12);
+  const ex = Model.exampleMaterials(), full = audit('Materials example', ex);
+  ok(Model.validate(ex).filter(x => x.level === 'error').length === 0, 'the Materials example has no validation errors');
+  ok(full.summary.complete && full.summary.unfilled < 1e-6 && full.summary.unplacedSurplus < 1e-6, 'the whole job completes: every fill full and no soil left behind');
+  // bookkeeping: the summary figures agree with the movement log
+  const sum = (f) => { let a = 0; for (let k = 0; k < full.n; k++) if (f(full.log.src[k], full.log.dst[k])) a += full.log.t[k]; return a; };
+  const P = full.P, kd = i => P.kind[i];
+  ok(near(sum((s, d) => d < P.n), full.msum.placedT, 1e-5) && near(sum((s, d) => kd(d) === 2), full.msum.exportT, 1e-5), 'placed and exported tonnes match the log');
+  ok(near(sum((s, d) => kd(d) === 3), full.msum.stockInT + full.msum.parkedT, 1e-5) && near(sum((s, d) => kd(s) === 3), full.msum.stockOutT, 1e-5) && full.msum.stockClosingT < 1e-6, 'stockpile in and out match the log, and the pile ends empty');
+  ok(near(sum((s, d) => s < P.n), full.summary.totalCut, 1e-5), 'every tonne of the 170,000 t cut was dug');
+  ok(near(full.msum.handleCost, full.msum.stockOutT * 1.8, 1e-5) && near(full.msum.exportCost, full.msum.exportT * 6, 1e-5), 'handling and export costs are tonnes x rate');
+  // every combination of the five modules runs, passes the audit and reports consistent figures
+  let combos = 0, anyBad = 0;
+  for (let mask = 1; mask < 32; mask++) {
+    const ids = ['A1', 'A2', 'A3', 'A4', 'A5'].filter((_, b) => mask & (1 << b)), sc = Model.exampleMaterials();
+    ['A1', 'A2', 'A3', 'A4', 'A5'].forEach(id => (sc.setup.modules[id] = ids.indexOf(id) >= 0));
+    const r = Engine.simulate(sc), before = fails; audit('sweep ' + ids.join('+'), sc); combos++;
+    if (fails > before) anyBad++;
+    if (r.msum && !(near(r.msum.placedT, sum2(r, (s, d) => d < r.P.n), 1e-5))) anyBad++;
+  }
+  function sum2(r, f) { let a = 0; for (let k = 0; k < r.n; k++) if (f(r.log.src[k], r.log.dst[k])) a += r.log.t[k]; return a; }
+  ok(combos === 31 && anyBad === 0, 'all 31 combinations of A1-A5 run cleanly');
+  // switching every module off gives back the plain job
+  const off = Model.exampleMaterials(); ['A1', 'A2', 'A3', 'A4', 'A5'].forEach(id => (off.setup.modules[id] = false));
+  const offR = Engine.simulate(off); ok(offR.msum === null && offR.P.cfg.mat === null && offR.summary.totalFill === 154000, 'all A off: no material layer, and the quantities are those of the plain road');
+  // save and load
+  const back = Model.normalise(JSON.parse(JSON.stringify(ex)));
+  ok(hashOf(Engine.simulate(back)) === hashOf(full), 'the example survives save and load with an identical movement log');
+  // units: tonnes to m3 and back restores the quantities at each material's density and compaction
+  const u = Model.exampleMaterials(), before = u.sections.map(s => s.lines.map(l => l.qty));
+  Model.setUnits(u, 'm3'); Model.setUnits(u, 'tonnes');
+  const worst = Math.max(...u.sections.map((s, i) => Math.max(...s.lines.map((l, q) => Math.abs(l.qty - before[i][q])))));
+  ok(worst < 0.01, 'tonnes to m3 and back: every section line is restored (worst error ' + worst.toFixed(4) + ' t)');
+  const m3 = Model.exampleMaterials(); Model.setUnits(m3, 'm3');
+  const m3r = Engine.simulate(m3); ok(near(m3r.summary.totalCut, 170000, 5) && m3r.summary.complete, 'in m3 the same job totals 170,000 t of cut and still completes');
+  // deterministic optimiser on the full example
+  const o1 = runOpt(Model.exampleMaterials(), 'tonneKm', 1e9, { maxIter: 25 }), o2 = runOpt(Model.exampleMaterials(), 'tonneKm', 1e9, { maxIter: 25 });
+  ok(JSON.stringify(o1.plan) === JSON.stringify(o2.plan) && o1.after.placedT >= o1.before.placedT - 1e-6, 'the optimiser is deterministic and keeps the soil placed on the Materials example');
+  if (o1.plan) { const pl = Model.exampleMaterials(); pl.plan = o1.plan; audit('Materials example with an optimised plan', pl); }
+}
+
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
 {
   const a = Model.exampleSimple(); a.setup.level = 'custom'; a.modules.B1 = { site: { fleet: 12 }, mode: 'site' };
