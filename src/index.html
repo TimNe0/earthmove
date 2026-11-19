@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script>try{var t=localStorage.getItem("earthmove.theme")||"light";if(t!=="auto")document.documentElement.setAttribute("data-theme",t)}catch(e){document.documentElement.setAttribute("data-theme","light")}</script>
+<title>Earthmove: earth movement simulator</title>
+<style>
+/*@CSS@*/
+</style>
+</head>
+<body>
+<header id="top">
+  <span class="brand">Earthmove</span>
+  <input id="scnname" type="text" aria-label="Scenario name">
+  <span id="modbadge"></span>
+  <button id="btnTheme" title="Switch between light, dark and automatic (follows your system)"></button>
+  <button id="btnSetup">Setup</button>
+  <select id="selExample" aria-label="Load example"><option value="">Examples…</option><option value="simple">Simple example (12 sections, 8 km)</option><option value="modules">Modules demo</option></select>
+  <button id="btnSave">Save scenario</button>
+  <button id="btnLoad">Load scenario</button>
+  <input id="fileLoad" type="file" accept=".json,application/json" hidden>
+</header>
+<main id="screenSetup" hidden></main>
+<main id="screenMain">
+  <section id="playbar">
+    <div id="clock"></div>
+    <div class="btns">
+      <button id="bRestart" class="icon" title="Restart">⏮</button>
+      <button id="bStepH" class="icon" title="Step one hour">+1h</button>
+      <button id="bPlay" class="primary icon" title="Play / pause">▶</button>
+      <button id="bStepD" class="icon" title="Step one day">+1d</button>
+    </div>
+    <button id="bOpt" class="primary" title="Find a better plan">Optimise&hellip;</button>
+    <div id="speedwrap"><span>Speed</span><input id="speed" type="range" min="0" max="100" value="45"><span id="speedlbl"></span></div>
+    <label id="skipwrap" title="Jump over hours when no soil is being loaded or moved"><input type="checkbox" id="skipIdle" checked> Skip idle hours</label>
+    <div id="counter"></div>
+  </section>
+  <div id="optpanel" class="panel" hidden></div>
+  <div id="banner"></div>
+  <div id="stagewrap">
+    <canvas id="road"></canvas>
+    <div id="zoomctl"><button class="icon" id="zOut" title="Zoom out">−</button><button class="icon" id="zFit" title="Fit whole road">Fit</button><button class="icon" id="zIn" title="Zoom in">+</button></div>
+  </div>
+  <canvas id="overview" title="Overview: click or drag to move the view"></canvas>
+  <div class="legend"><span><i style="background:var(--sand)"></i>surplus soil (cut)</span><span><i style="background:var(--sky);border:1px solid var(--accent2)"></i>hollow to fill</span><span><i style="background:repeating-linear-gradient(45deg,#b3261e,#b3261e 2px,transparent 2px,transparent 5px)"></i>locked: cannot be tipped into yet</span><span>grains = soil in transit</span></div>
+  <div id="tcpanel" hidden>
+    <div id="tcresize" title="Drag up or down to resize the chart"></div>
+    <div id="tchead">
+      <b>Time-chainage chart</b>
+      <button id="tcDir" title="Which way time runs down the page"></button>
+      <label>Time span <select id="tcSpan"></select></label>
+      <button id="tcZoomOut" class="icon" title="Show more time">&minus;</button><button id="tcZoomIn" class="icon" title="Show less time">+</button>
+      <label class="check" title="Keep the now line in view as the simulation plays"><input type="checkbox" id="tcFollow"> Follow now</label>
+      <span class="spacer"></span>
+      <button id="tcExport" title="Save the chart as a PNG image">Export image</button>
+      <button id="tcMin" class="icon"></button>
+    </div>
+    <div id="tcbody"><canvas id="tcchart"></canvas><div id="tctip" hidden></div></div>
+  </div>
+  <div id="lower">
+    <div class="panel"><h3>Movements per day (bars, left axis) and trucks needed each day (line, right axis)</h3><canvas id="chart"></canvas></div>
+    <div class="panel">
+      <div class="tabs" id="tabs"></div>
+      <div id="tabbody"></div>
+    </div>
+  </div>
+</main>
+<script>
+/*@ENGINE@*/
+</script>
+<script>
+/*@MODULES@*/
+</script>
+<script>
+/*@MODEL@*/
+</script>
+<script>
+/*@OPTIM@*/
+</script>
+<script type="text/plain" id="worker-src">
+/*@ENGINE@*/
+/*@OPTIM@*/
+/*@WORKER@*/
+</script>
+<script>
+/*@UI@*/
+</script>
+</body>
+</html>
