@@ -84,6 +84,8 @@ const NEUTRAL = {
   C3: { periods: [] },
   C4: { layers: 1, waitDays: 0, mode: 'site', bySection: {} },
   C5: { publicLimit: 100, internalLimit: '', publicAll: false, publicStretches: [] },
+  E1: { basis: 'used', lorryRate: 45, excavatorRate: 70, receivingRate: 55, fuelPrice: 1.45, labourRate: 28 },
+  E2: { lorryLPerHour: 25, excavatorLPerHour: 30, receivingLPerHour: 18, kgCO2PerLitre: 2.68 },
   D1: { lostDays: new Array(12).fill(0), winterOn: false, random: false },
   D2: { runs: 200, seed: 1, breakdownPct: 2 },
   D3: { targets: {} },

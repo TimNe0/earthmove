@@ -253,7 +253,7 @@
       if (nd.kind === 1 || nd.kind === 3) P.srcs.push(x);
     });
     P.cfg = buildCfg(scn, P, uf);
-    P.cfg.full = !!(P.cfg.mat || P.cal || P.con); // jobs that use a module only the full dispatcher knows
+    P.cfg.full = !!(P.cfg.mat || P.cal || P.con || P.cfg.ce); // jobs that use a module only the full dispatcher knows
     // per-source destination list, nearest first (ties by section order)
     for (const i of P.srcs) {
       P.destOrder[i] = P.dsts.slice().sort((a, b) => Math.abs(P.mid[a] - P.mid[i]) - Math.abs(P.mid[b] - P.mid[i]) || a - b);
@@ -267,7 +267,7 @@
     const mods = (scn.setup && scn.setup.modules) || {}, md = scn.modules || {}, st = scn.settings, n = P.n;
     const num = (v, d) => (+v > 0 ? +v : d);
     const idx = {}; P.ids.forEach((id, i) => (idx[id] = i));
-    const c = { useFleet: false, fleetSize: 0, types: [], simple: true, recv: null, exc: null, uLorry: 1, uExc: 1, uRecv: 1, mat: null };
+    const c = { useFleet: false, fleetSize: 0, types: [], simple: true, recv: null, exc: null, uLorry: 1, uExc: 1, uRecv: 1, mat: null, ce: !!(mods.E1 || mods.E2) }; // ce: cost or carbon counters wanted
     if (mods.B6) {
       const b = md.B6 || {}, pct = v => (+v > 0 && +v <= 100 ? +v / 100 : 1);
       c.uLorry = pct(b.lorries); c.uExc = pct(b.excavators); c.uRecv = pct(b.receiving);
@@ -563,6 +563,7 @@
     stockList.forEach(x => (stock[x] = new Float64Array(M.ids.length)));
     const stockIn = new Float64Array(nn), stockOut = new Float64Array(nn);
     let placedT = 0, handleCost = 0, parkedT = 0;
+    const ce = !!cfg.ce; let csLorryMin = 0, csExcMin = 0, csKm = 0, csRecvT = 0; // E1/E2 counters: lorry-minutes busy, loader minutes, haul km (loaded + empty), tonnes received on site
     const stockSpace = x => (+P.node[x].capacityT > 0 ? +P.node[x].capacityT : 0) - stockTot[x];
     function pickStock(i, day, departT, ty, svc) { // nearest stockpile with room
       let bx = -1, bd = Infinity;
@@ -912,6 +913,7 @@
         if (tipAbs > lastTip[j]) lastTip[j] = tipAbs;
         if (tipAbs > endTime) endTime = tipAbs;
         if (conPub) { const pb = isPub(best, j); if (pb) pubUsed++; else intUsed++; if (CL) CL.pub.push(pb ? 1 : 0); }
+        if (ce) { csLorryMin += (tipAbs - (base + bestT)) + tripE(P, ty, j, best); if (kBest !== 1) csExcMin += svc; csKm += 2 * dist(P, best, j) / 1000; if (j < n) csRecvT += tonnes; }
         moves++; tonnesMoved += tonnes; tonneKm += tonnes * dist(P, best, j) / 1000;
         used++; lastMove = d; idleWork = 0;
         if (firstDay < 0) firstDay = d;
@@ -959,7 +961,8 @@
       levels = new Float64Array(n).fill(-1);
       for (let i = 0; i < n; i++) { if (P.qty[i] > 0 && remSrc[i] <= EPS) levels[i] = lastDepart[i]; else if (P.qty[i] < 0 && freeNeed[i] <= EPS) levels[i] = lastTip[i]; }
     }
-    if (noLog) return { P, log: null, n: moves, daily, sections: null, summary, msum, levels };
+    const csum = ce ? { lorryMin: csLorryMin, excMin: csExcMin, km: csKm, recvT: csRecvT } : null;
+    if (noLog) return { P, log: null, n: moves, daily, sections: null, summary, msum, levels, csum };
 
     const sections = [];
     for (let i = 0; i < n; i++) {
@@ -978,7 +981,7 @@
     const reached = sections.filter(s => s.type !== 'none' && s.levelTime !== null);
     summary.completion = reached.length ? reached.reduce((mx, s) => Math.max(mx, s.levelTime), 0) : null;
     summary.completionDay = summary.completion === null ? null : Math.floor(summary.completion / DAY);
-    return { P, log: L, n: moves, daily, sections, summary, msum, mlog: ML, clog: CL };
+    return { P, log: L, n: moves, daily, sections, summary, msum, mlog: ML, clog: CL, csum };
   }
 
   // ---- the original dispatcher, for jobs with no material module (see simulate above and tests/diff.js) ----
@@ -1248,6 +1251,34 @@
     return { P, log: L, n: moves, daily, sections, summary };
   }
 
+  // ---------- cost (E1) and carbon (E2) ----------
+  // From the run's counters. Plant hours: lorries = busy time from the start of loading to back at the loader; excavators = loading time; receiving plant =
+  // tonnes received / receiving rate (B4's rate, or 300 t/h). Fuel = plant hours x litres per hour (E2's rates, or sensible defaults when only E1 is on).
+  function costCarbon(scn, res) {
+    const mods = (scn.setup && scn.setup.modules) || {}, md = scn.modules || {}, cs = res.csum;
+    if (!cs || !(mods.E1 || mods.E2)) return null;
+    const e1 = mods.E1 ? md.E1 || {} : null, e2 = md.E2 || {}, num = (v, d) => (+v >= 0 ? +v : d);
+    const recvRate = (mods.B4 && +(md.B4 || {}).rate > 0 ? +md.B4.rate : 300) * res.P.unitF; // tonnes per hour (B4's rate is held in the scenario's unit)
+    const lorryH = cs.lorryMin / 60, excH = cs.excMin / 60, recvH = recvRate > 0 ? cs.recvT / recvRate : 0;
+    const litres = lorryH * num(e2.lorryLPerHour, 25) + excH * num(e2.excavatorLPerHour, 30) + recvH * num(e2.receivingLPerHour, 18);
+    const out = { lorryH, excH, recvH, km: cs.km, litres, co2t: mods.E2 ? litres * num(e2.kgCO2PerLitre, 2.68) / 1000 : null };
+    if (e1) {
+      const sm = res.summary, P = res.P;
+      let lorryBill = lorryH;
+      if (e1.basis === 'standing' && sm.fleetSize) { // a fixed fleet is hired for every working day of the programme, whether or not it is busy
+        const shift = P.srcs.length ? P.srcs.reduce((a, i) => a + (P.we[i] - P.ws[i]) / 60, 0) / P.srcs.length : 0;
+        lorryBill = sm.fleetSize * sm.workingSpan * shift;
+      }
+      out.hire = lorryBill * num(e1.lorryRate, 45) + excH * num(e1.excavatorRate, 70) + recvH * num(e1.receivingRate, 55);
+      out.fuel = litres * num(e1.fuelPrice, 1.45);
+      out.labour = (lorryH + excH + recvH) * num(e1.labourRate, 28);
+      out.tip = res.msum ? res.msum.importCost + res.msum.exportCost + res.msum.handleCost : 0; // tip fees and purchases from the off-site gates and stockpile handling
+      out.total = out.hire + out.fuel + out.labour + out.tip;
+      const tonnes = res.msum ? res.msum.placedT : sm.tonnesMoved;
+      out.perTonne = tonnes > 0 ? out.total / tonnes : null;
+    }
+    return out;
+  }
   // ---------- target dates (D3) ----------
   // For every section with a contract date: the day it reaches level, and how many days late (0 = on time). A section that never reaches level is late with daysLate null.
   function lateness(scn, res) {
@@ -1375,5 +1406,5 @@
   }
   function startedBy(res, t) { return upperBound(res.log.start, t); } // log.start is non-decreasing
 
-  return { mulberry, buildDayOff, lateness, ukHolidays, holidayList, DAY, parseISO, hm, dayToISO, fmtDay, fmtClock, fmtTime, dowOf, DOW_NAMES, netQty, lineFactor, lineTonnes, prepare, dist, travelMin, tripL, tripE, tripX, simulate, minCostFlow, sigOf, activePlan, planStatus, buildSeries, remainingAt, upperBound, startedBy, truckStats, trucksAt, nextActive, chartData };
+  return { costCarbon, mulberry, buildDayOff, lateness, ukHolidays, holidayList, DAY, parseISO, hm, dayToISO, fmtDay, fmtClock, fmtTime, dowOf, DOW_NAMES, netQty, lineFactor, lineTonnes, prepare, dist, travelMin, tripL, tripE, tripX, simulate, minCostFlow, sigOf, activePlan, planStatus, buildSeries, remainingAt, upperBound, startedBy, truckStats, trucksAt, nextActive, chartData };
 });

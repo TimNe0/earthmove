@@ -1367,6 +1367,47 @@ console.log('\n53. THE RISK DEMO EXAMPLE AND THE PHASE 6 SWEEP');
   ok(JSON.stringify([back.modules.D1, back.modules.D2]) === before, 'D1 and D2 entries survive switching off, saving, loading and switching on again');
 }
 
+console.log('\n54. E1 COST AND E2 CARBON: from plant hours, fuel, labour and off-site charges');
+{
+  const near = (x, y, tol) => Math.abs(x - y) <= (tol || 1e-6);
+  const ce = (on, p) => withMods(tiny(), on, p || {});
+  // hand (5 loads of 20 t, 1 km haul at 5 kph = 12 min, 10 min loading): a load takes 22 min plus 12 min back empty = 34 lorry-minutes, 5 x 34 = 170 min = 2.8333 h.
+  // Loader: 5 x 10 min = 0.8333 h. Receiving plant: 100 t at 300 t/h = 0.3333 h. Distance: 5 x 2 km = 10 km.
+  const r = Engine.simulate(ce({ E1: true, E2: true })), c = Engine.costCarbon(ce({ E1: true, E2: true }), r);
+  ok(near(c.lorryH, 170 / 60) && near(c.excH, 50 / 60) && near(c.recvH, 1 / 3) && near(c.km, 10), 'hand: lorries 2.8333 h, loader 0.8333 h, receiving plant 0.3333 h, 10 km');
+  // fuel at 25, 30 and 18 l/h: 70.8333 + 25 + 6 = 101.8333 l; 101.8333 l x 2.68 kg = 272.91 kg = 0.27291 t
+  ok(near(c.litres, 101.8333333) && near(c.co2t, 101.8333333 * 2.68 / 1000), 'hand: 101.83 litres and 0.2729 t CO2e at 2.68 kg per litre');
+  // cost: hire 2.8333 x 45 + 0.8333 x 70 + 0.3333 x 55 = 204.1667; fuel 101.8333 x 1.45 = 147.6583; labour (2.8333 + 0.8333 + 0.3333) x 28 = 112; total 463.825; per tonne 4.63825
+  ok(near(c.hire, 204.1666667) && near(c.fuel, 147.6583333) && near(c.labour, 112) && near(c.total, 463.825) && near(c.perTonne, 4.63825), 'hand: hire 204.17 + fuel 147.66 + labour 112.00 = 463.83, which is 4.64 a tonne');
+  ok(Engine.costCarbon(ce({ E2: true }), Engine.simulate(ce({ E2: true }))).total === undefined && Engine.costCarbon(ce({ E1: true }), Engine.simulate(ce({ E1: true }))).co2t === null, 'E1 alone reports cost and no carbon; E2 alone reports carbon and no cost');
+  ok(Engine.costCarbon(tiny(), Engine.simulate(tiny())) === null, 'with both modules off there is no cost or carbon');
+  // direction
+  const dear = ce({ E1: true }, { E1: { lorryRate: 90 } }), dr = Engine.costCarbon(dear, Engine.simulate(dear));
+  ok(near(dr.hire - c.hire, 2.8333333333 * 45) && dr.total > c.total, 'direction: doubling the lorry rate adds exactly 2.8333 h x 45 to the hire');
+  const slow = ce({ E1: true, E2: true, B4: true }, { B4: { rate: 150 } }), sr = Engine.costCarbon(slow, Engine.simulate(slow));
+  ok(near(sr.recvH, 100 / 150) && sr.co2t > c.co2t, 'direction: a slower receiving rate (150 t/h) doubles receiving-plant hours and raises the carbon');
+  const ex = ce({ E1: true, A4: true }, { A4: { points: [{ id: 'p1', name: 'Gate', kind: 'export', chainageM: 0, dailyT: 1e6, costPerT: 5, roundTripMin: 30 }] } }); Model.setQty(ex.sections[0], 140);
+  const er = Engine.simulate(ex), ec = Engine.costCarbon(ex, er);
+  ok(near(ec.tip, 200) && near(ec.perTonne, ec.total / er.msum.placedT), 'tip fees: 40 t exported at 5 a tonne adds 200 to the cost, and the cost per tonne uses the tonnes placed');
+  // a fixed fleet hired for every working day costs more than the busy hours
+  const fl = ce({ E1: true, B1: true }, { B1: { fleet: 4 }, E1: { basis: 'standing' } }), fr = Engine.simulate(fl), fc = Engine.costCarbon(fl, fr);
+  ok(near(fc.hire, 4 * fr.summary.workingSpan * 12 * 45 + fc.excH * 70 + fc.recvH * 55), 'standing hire: fleet 4 x working days x 12 h shift x 45 per hour, plus the other plant');
+  const fu = ce({ E1: true, B1: true }, { B1: { fleet: 4 } });
+  ok(fc.hire > Engine.costCarbon(fu, Engine.simulate(fu)).hire, 'direction: standing hire costs more than charging only the busy hours');
+  // neutral: the counters never change dispatch, and defaults run on the example
+  const hashOf = q => crypto.createHash('sha1').update(JSON.stringify([q.log.src, q.log.dst, q.log.start, q.log.tip, q.log.t])).digest('hex').slice(0, 12);
+  ok(hashOf(Engine.simulate(withMods(Model.exampleSimple(), { E1: true, E2: true }))) === hashOf(Engine.simulate(Model.exampleSimple())), 'E1 and E2 on do not change the movement log');
+  const big = Engine.simulate(withMods(Model.exampleSimple(), { E1: true, E2: true })), bc = Engine.costCarbon(withMods(Model.exampleSimple(), { E1: true, E2: true }), big);
+  ok(bc.total > 0 && bc.co2t > 0 && bc.perTonne > 0, 'the 12-section example at the defaults: cost ' + Math.round(bc.total).toLocaleString() + ', ' + bc.co2t.toFixed(1) + ' t CO2e');
+  // the optimiser can minimise cost or carbon and reports them before and after
+  const sc = withMods(Model.exampleSimple(), { E1: true, E2: true });
+  const oc = runOpt(sc, 'cost', 1e9, { maxIter: 40 }), oe = runOpt(sc, 'carbon', 1e9, { maxIter: 40 });
+  ok(oc.before.cost > 0 && oc.after.cost <= oc.before.cost + 1e-6 && oe.after.co2t <= oe.before.co2t + 1e-9, 'the cost and carbon goals never make their own measure worse, and the result carries both');
+  ok(Model.validate(ce({ E1: true }, { E1: { lorryRate: -1 } })).some(x => x.level === 'error' && /lorry hire rate must be 0 or more/.test(x.text) && x.cell.mod === 'E1'), 'a negative hire rate is rejected in plain English');
+  ok(Model.validate(ce({ E2: true }, { E2: { kgCO2PerLitre: 0 } })).some(x => /carbon factor must be more than 0/.test(x.text)), 'a zero carbon factor is rejected');
+  ok(Model.validate(ce({ E1: true }, { E1: { basis: 'standing' } })).some(x => x.level === 'warn' && /no fixed fleet/.test(x.text)), 'standing hire with no fixed fleet is flagged');
+}
+
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
 {
   const a = Model.exampleSimple(); a.setup.level = 'custom'; a.modules.B1 = { site: { fleet: 12 }, mode: 'site' };

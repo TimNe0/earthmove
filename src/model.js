@@ -252,6 +252,13 @@
           if (!same) add('warn', (s.name || 'A section') + ' can only ' + (q > 0 ? 'send its soil to' : 'receive soil from') + ' the other side of ' + nm + ', so it cannot start before ' + when + '.', mc(b.id + ':openDate'));
         });
       });
+    } else if (id === 'E1') {
+      [['lorryRate', 'The lorry hire rate'], ['excavatorRate', 'The excavator hire rate'], ['receivingRate', 'The receiving plant hire rate'], ['fuelPrice', 'The fuel price'], ['labourRate', 'The labour rate']].forEach(([k, nm]) => { if (!(+m[k] >= 0)) add('error', nm + ' must be 0 or more.', mc(k)); });
+      if (m.basis !== 'used' && m.basis !== 'standing') add('error', 'The lorry hire basis must be "used" or "standing".', mc('basis'));
+      if (m.basis === 'standing' && !(scn.setup.modules.B1 || scn.setup.modules.B2)) add('warn', 'Standing hire charges a fixed fleet for every working day, but there is no fixed fleet (switch on B1 or B2), so busy hours are charged instead.', mc('basis'));
+    } else if (id === 'E2') {
+      [['lorryLPerHour', 'The lorry fuel burn'], ['excavatorLPerHour', 'The excavator fuel burn'], ['receivingLPerHour', 'The receiving plant fuel burn']].forEach(([k, nm]) => { if (!(+m[k] >= 0)) add('error', nm + ' must be 0 or more litres per hour.', mc(k)); });
+      if (!(+m.kgCO2PerLitre > 0)) add('error', 'The carbon factor must be more than 0 kg of CO\u2082e per litre.', mc('kgCO2PerLitre'));
     } else if (id === 'D1') {
       (m.lostDays || []).forEach((v, k) => {
         const mn = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][k];

@@ -18,7 +18,9 @@
   const GOALS = {
     completion: 'Earliest overall completion',
     utilisation: 'Highest use of the daily movement limit',
-    tonneKm: 'Lowest total tonne-km'
+    tonneKm: 'Lowest total tonne-km',
+    cost: 'Lowest total cost (needs E1)',
+    carbon: 'Lowest carbon (needs E2)'
   };
 
   function rng(seed) { // mulberry32
@@ -36,12 +38,18 @@
     const lost = Math.max(0, maxFlow - (s.placedT !== undefined ? s.placedT : s.tonnesMoved)); // material modules: soil placed in fills, not haulage
     const pen = lost > 0.5 ? 1e9 + lost * 1e3 : 0;
     const money = (s.cost || 0) * 1e-6; // import, export and handling cost break ties between otherwise equal plans
+    if (goal === 'cost') return pen + (s.costTotal || 0) + s.endTime * 1e-3;
+    if (goal === 'carbon') return pen + (s.co2 || 0) * 1000 + s.endTime * 1e-3; // kg CO2e
     if (goal === 'completion') return pen + s.endTime + s.tonneKm * 1e-4 + money;
     if (goal === 'utilisation') return pen - s.utilisation * 1e6 + s.endTime * 0.1 + money;
     return pen + s.tonneKm + s.endTime * 1e-3 + money;
   }
   // the summary the score reads: the core summary, plus placed tonnes and money when a material module is on
-  const scoreSummary = r => (r.msum ? Object.assign({ placedT: r.msum.placedT, cost: r.msum.importCost + r.msum.exportCost + r.msum.handleCost }, r.summary) : r.summary);
+  const scoreSummary = (r, scn) => {
+    let sm = r.msum ? Object.assign({ placedT: r.msum.placedT, cost: r.msum.importCost + r.msum.exportCost + r.msum.handleCost }, r.summary) : r.summary;
+    if (r.csum) { const cc = Engine.costCarbon(scn, r); if (cc) sm = Object.assign({}, sm, { costTotal: cc.total, co2: cc.co2t }); } // E1/E2: what cost and carbon goals minimise
+    return sm;
+  };
 
   const minCostFlow = Engine.minCostFlow; // lives in the engine so material nodes can reuse it
 
@@ -73,7 +81,7 @@
     let maxFlow = Math.min(sum(supply), sum(need)), mc0 = null;
     if (M && ns && nd) { mc0 = minCostFlow(supply, need, cost); maxFlow = mc0.total; }     // the most that classes and imports allow to be placed
     const before = Engine.simulate(scn, { P });           // what the user sees now (active plan or greedy dispatch)
-    const beforeScore = scoreOf(goal, scoreSummary(before), maxFlow);
+    const beforeScore = scoreOf(goal, scoreSummary(before, scn), maxFlow);
     const job = { done: false, iter: 0, evals: 0, result: null };
     if (!ns || !nd) { job.done = true; job.result = { improved: false, goal, reason: 'There is nothing to optimise: a plan needs at least one cut and one fill section.', before: pack(before), after: pack(before), plan: null, iterations: 0 }; job.step = () => job; job.progress = () => ({ iter: 0, frac: 1 }); return job; }
 
@@ -92,7 +100,7 @@
     function evaluate(st) {
       job.evals++;
       const r = Engine.simulate(scn, { P, plan: makePlan(st), noLog: true });
-      return { score: scoreOf(goal, scoreSummary(r), maxFlow), summary: r.summary };
+      return { score: scoreOf(goal, scoreSummary(r, scn), maxFlow), summary: r.summary };
     }
 
     // start point A: the flows the current dispatch produced, in the order each source first used them
@@ -112,7 +120,7 @@
     let cur = eB.score < eA.score ? stB : stA, curE = eB.score < eA.score ? eB : eA;
     let best = cur, bestE = curE;
     const startScore = curE.score;
-    const unit = goal === 'completion' ? 1440 : goal === 'utilisation' ? 1e4 : Math.max(20, 0.002 * before.summary.tonneKm);
+    const bs0 = scoreSummary(before, scn), unit = goal === 'completion' ? 1440 : goal === 'utilisation' ? 1e4 : goal === 'cost' ? Math.max(50, 0.002 * (bs0.costTotal || 0)) : goal === 'carbon' ? Math.max(5, 0.002 * (bs0.co2 || 0) * 1000) : Math.max(20, 0.002 * before.summary.tonneKm);
     const T0 = 0.5 * unit, T1 = 0.02 * unit;
     let lastProg = { iter: 0, evals: job.evals, frac: 0, bestScore: bestE.score, baseScore: beforeScore, startScore, bestSummary: bestE.summary };
 
@@ -187,6 +195,9 @@
         const after = Engine.simulate(scn, { P, plan });
         result.after = pack(after); result.plan = plan;
       } else result.after = result.before;
+      // E1/E2: cost and carbon before and after, when those modules are on
+      const cb = before.csum ? Engine.costCarbon(scn, before) : null;
+      if (cb) { result.before.cost = cb.total; result.before.co2t = cb.co2t; const ca = result.after === result.before ? cb : Engine.costCarbon(scn, Engine.simulate(scn, { P, plan: result.plan })); if (ca) { result.after = Object.assign({}, result.after, { cost: ca.total, co2t: ca.co2t }); } }
       job.result = result;
     }
     job.cancel = () => finish(true);
