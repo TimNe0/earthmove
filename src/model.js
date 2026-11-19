@@ -252,6 +252,14 @@
           if (!same) add('warn', (s.name || 'A section') + ' can only ' + (q > 0 ? 'send its soil to' : 'receive soil from') + ' the other side of ' + nm + ', so it cannot start before ' + when + '.', mc(b.id + ':openDate'));
         });
       });
+    } else if (id === 'D3') {
+      const t = m.targets || {};
+      Object.keys(t).forEach(k => {
+        const sec = scn.sections.find(x => x.id === k); if (!t[k]) return;
+        if (Engine.parseISO(t[k]) === null) add('error', (sec ? sec.name || 'A section' : 'A section') + ': the target date is not a valid date.', sec ? { sec: sec.id, field: 'd3target' } : null);
+        else if (!sec) add('warn', 'A target date is set for a section that no longer exists, so it is ignored.', null);
+        else if (!Engine.netQty(sec)) add('warn', (sec.name || 'A section') + ' has a target date but no soil, so it can never be late.', { sec: sec.id, field: 'd3target' });
+      });
     } else if (id === 'C2') {
       const tot = scn.sections.reduce((a, x) => a + (+x.lengthM || 0), 0);
       (m.stretches || []).forEach(x => {

@@ -1204,6 +1204,18 @@
     return { P, log: L, n: moves, daily, sections, summary };
   }
 
+  // ---------- target dates (D3) ----------
+  // For every section with a contract date: the day it reaches level, and how many days late (0 = on time). A section that never reaches level is late with daysLate null.
+  function lateness(scn, res) {
+    const t = (((scn.modules || {}).D3) || {}).targets || {}, out = [];
+    res.sections.forEach((r, i) => {
+      const tg = t[res.P.ids[i]]; if (!tg) return;
+      const td = parseISO(tg); if (td === null) return;
+      const reached = r.type !== 'none' && r.levelTime !== null && r.levelTime !== undefined ? Math.floor(r.levelTime / DAY) + res.P.startDay : null;
+      out.push({ i, id: res.P.ids[i], name: res.P.names[i], target: tg, targetDay: td, reachedDay: reached, daysLate: reached === null ? null : Math.max(0, reached - td), late: reached === null || reached > td });
+    });
+    return out;
+  }
   // ---------- time-chainage chart data (E8) ----------
   // Reads only the movement log and the section results, so the chart can never disagree with the road view or the results table.
   // A section's earthworks start at its first load (cut) or first tip (fill) and finish when it reaches level.
@@ -1319,5 +1331,5 @@
   }
   function startedBy(res, t) { return upperBound(res.log.start, t); } // log.start is non-decreasing
 
-  return { ukHolidays, holidayList, DAY, parseISO, hm, dayToISO, fmtDay, fmtClock, fmtTime, dowOf, DOW_NAMES, netQty, lineFactor, lineTonnes, prepare, dist, travelMin, tripL, tripE, tripX, simulate, minCostFlow, sigOf, activePlan, planStatus, buildSeries, remainingAt, upperBound, startedBy, truckStats, trucksAt, nextActive, chartData };
+  return { lateness, ukHolidays, holidayList, DAY, parseISO, hm, dayToISO, fmtDay, fmtClock, fmtTime, dowOf, DOW_NAMES, netQty, lineFactor, lineTonnes, prepare, dist, travelMin, tripL, tripE, tripX, simulate, minCostFlow, sigOf, activePlan, planStatus, buildSeries, remainingAt, upperBound, startedBy, truckStats, trucksAt, nextActive, chartData };
 });

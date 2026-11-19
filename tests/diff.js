@@ -84,6 +84,7 @@ const NEUTRAL = {
   C3: { periods: [] },
   C4: { layers: 1, waitDays: 0, mode: 'site', bySection: {} },
   C5: { publicLimit: 100, internalLimit: '', publicAll: false, publicStretches: [] },
+  D3: { targets: {} },
   D4: { shifts: [{ start: '00:00', end: '23:59' }], replace: false, weekendSat: false, weekendSun: false, holidaysOn: false }
 };
 const NEUTRAL_ON = Object.keys(NEUTRAL).reduce((o, k) => ((o[k] = true), o), {});

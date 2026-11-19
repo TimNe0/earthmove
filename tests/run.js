@@ -1210,6 +1210,58 @@ console.log('\n47. C5 PUBLIC VS INTERNAL MOVEMENTS: a daily cap on public-road m
   ok(Model.validate(road({ publicLimit: 5, internalLimit: '', publicStretches: [] })).some(x => x.level === 'warn' && /no movement counts as public/.test(x.text)), 'a public limit with nothing marked public is flagged as having no effect');
 }
 
+console.log('\n48. D3 TARGET DATES: late sections are flagged with the days late');
+{
+  const d3 = targets => { const sc = tiny(); sc.settings.maxMovesPerDay = 3; return withMods(sc, { D3: true }, { D3: { targets } }); };
+  // hand: cap 3 a day, so loads 1-3 are on Monday and loads 4-5 on Tuesday (the last load leaves the cut at 07:20 and tips at 07:32). The cut reaches level when its last load leaves
+  // (Tuesday), the fill when its last load tips (Tuesday). A target of Monday is 1 day late; Tuesday is on time.
+  const sc = d3({ a: '2027-01-11', b: '2027-01-12' }), r = Engine.simulate(sc), late = Engine.lateness(sc, r);
+  const byId = id => late.find(x => x.id === id);
+  ok(byId('a').daysLate === 1 && byId('a').late && Engine.fmtDay(byId('a').reachedDay) === Engine.fmtDay(Engine.parseISO('2027-01-12')), 'hand: the cut reaches level Tuesday, so a Monday target is 1 day late');
+  ok(byId('b').daysLate === 0 && !byId('b').late, 'hand: the fill reaches level Tuesday, on a Tuesday target: on time');
+  const m = Engine.lateness(d3({ b: '2027-01-11' }), Engine.simulate(d3({ b: '2027-01-11' })));
+  ok(m.length === 1 && m[0].daysLate === 1, 'a Monday target for the fill is 1 day late');
+  // a section that never reaches level is late with no day count
+  const perm = d3({ b: '2027-01-20' }); perm.setup.modules.C3 = true; perm.modules.C3.periods = [{ id: 'p0', sec: 'b', from: '2027-01-12', to: '' }];
+  const pl = Engine.lateness(perm, Engine.simulate(perm));
+  ok(pl.length === 1 && pl[0].late && pl[0].daysLate === null && pl[0].reachedDay === null, 'a fill that never reaches level is flagged late, with no day count');
+  ok(Engine.lateness(d3({}), Engine.simulate(d3({}))).length === 0, 'no targets, no lateness rows');
+  // D3 never changes a simulation
+  const hashOf = q => crypto.createHash('sha1').update(JSON.stringify([q.log.src, q.log.dst, q.log.start, q.log.tip, q.log.t])).digest('hex').slice(0, 12);
+  ok(hashOf(Engine.simulate(withMods(Model.exampleSimple(), { D3: true }, { D3: { targets: { s2: '2027-02-01' } } }))) === hashOf(Engine.simulate(Model.exampleSimple())), 'D3 on with targets set reproduces the core result');
+  ok(Model.validate(d3({ a: 'tomorrow' })).some(x => x.level === 'error' && /target date is not a valid date/.test(x.text)), 'a bad target date is rejected in plain English');
+  ok(Model.validate(d3({ zzz: '2027-01-20' })).some(x => x.level === 'warn' && /no longer exists/.test(x.text)), 'a target on a deleted section is flagged');
+}
+
+console.log('\n49. PHASE 5 SWEEP: every site-constraint and calendar module at its defaults, all together, and switched off and on again');
+{
+  const P5 = ['C1', 'C2', 'C3', 'C4', 'C5', 'D3', 'D4'];
+  const base = Engine.simulate(Model.exampleSimple());
+  P5.forEach(id => {
+    const sc = withMods(Model.exampleSimple(), { [id]: true });
+    ok(Model.validate(sc).filter(x => x.level === 'error').length === 0, id + ' on with defaults: no validation errors');
+    const r = audit(id + ' at defaults', sc);
+    ok(r.summary.unfilled < 1e-6 && Math.abs(r.summary.unplacedSurplus - base.summary.unplacedSurplus) < 1 && r.summary.endTime >= base.summary.endTime, id + ' at defaults: every fill is filled, the same 16,000 t surplus is left over, and it is never earlier than without it');
+  });
+  const all = withMods(Model.exampleSimple(), P5.reduce((o, k) => ((o[k] = true), o), {}));
+  ok(Model.validate(all).filter(x => x.level === 'error').length === 0, 'all seven on together: no validation errors');
+  const allR = audit('all of C1-C5, D3, D4 on', all);
+  ok(allR.summary.unfilled < 1e-6 && Math.abs(allR.summary.unplacedSurplus - base.summary.unplacedSurplus) < 1, 'all seven on together: every fill is filled and no constraint is broken');
+  ok(Engine.simulate(withMods(Model.exampleSimple(), { C4: true })).summary.endTime > base.summary.endTime, 'direction: C4 at its defaults (3 layers, 2 days) makes the 12-section job later');
+  // entries survive switching off and on, and a save and load
+  const sc = withMods(Model.exampleSimple(), {}, {
+    C1: { blocks: [{ id: 'b1', name: 'River', chainageM: 4000, openDate: '2027-02-01' }] }, C2: { stretches: [{ id: 'l1', name: 'Lane', fromM: 1000, toM: 1500, mode: 'rate', perHour: 12 }] },
+    C3: { periods: [{ id: 'p1', sec: 's5', from: '2027-02-01', to: '2027-02-10', note: 'ecology' }] }, C4: { layers: 4, waitDays: 3 },
+    C5: { publicLimit: 40, internalLimit: 90, publicStretches: [{ id: 'r1', name: 'Road', fromM: 0, toM: 700 }] }, D3: { targets: { s2: '2027-03-01' } },
+    D4: { shifts: [{ start: '06:00', end: '10:00' }, { start: '12:00', end: '20:00' }], weekendSat: true } });
+  P5.forEach(id => (sc.setup.modules[id] = true));
+  const before = JSON.stringify(P5.map(id => sc.modules[id]));
+  P5.forEach(id => (sc.setup.modules[id] = false));
+  const mid = Model.normalise(JSON.parse(JSON.stringify(sc)));
+  P5.forEach(id => (mid.setup.modules[id] = true));
+  ok(JSON.stringify(P5.map(id => mid.modules[id])) === before, 'every entry is kept when all seven are switched off, saved, loaded and switched on again');
+}
+
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
 {
   const a = Model.exampleSimple(); a.setup.level = 'custom'; a.modules.B1 = { site: { fleet: 12 }, mode: 'site' };
