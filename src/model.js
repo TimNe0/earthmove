@@ -234,6 +234,15 @@
           if (!(+x.handleCostPerT >= 0)) add('error', nm + ': the double-handling cost cannot be negative.', mc(x.id + ':handleCostPerT'));
         }
       });
+    } else if (id === 'C3') {
+      (m.periods || []).forEach((x, k) => {
+        const nm = 'Closed period ' + (k + 1) + (x.note ? ' (' + x.note + ')' : '');
+        const a = Engine.parseISO(x.from), b = x.to ? Engine.parseISO(x.to) : null;
+        if (a === null) add('error', nm + ': the start date is not a valid date.', mc(x.id + ':from'));
+        if (x.to && b === null) add('error', nm + ': the end date is not a valid date. Leave it blank if the section is closed for good.', mc(x.id + ':to'));
+        if (a !== null && b !== null && b < a) add('error', nm + ': it ends before it starts.', mc(x.id + ':to'));
+        if (x.sec && x.sec !== 'all' && !scn.sections.some(sec => sec.id === x.sec)) add('warn', nm + ' refers to a section that no longer exists, so it has no effect.', mc(x.id + ':sec'));
+      });
     } else if (id === 'D4') {
       const sh = m.shifts || [];
       sh.forEach((x, k) => {

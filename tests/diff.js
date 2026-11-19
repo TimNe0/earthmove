@@ -79,6 +79,7 @@ baseList.forEach(s => {
 // Phase 5-7 modules at neutral settings (each module adds its entry here as it is built): they run through the full dispatcher
 // and must still reproduce the original engine exactly.
 const NEUTRAL = {
+  C3: { periods: [] },
   D4: { shifts: [{ start: '00:00', end: '23:59' }], replace: false, weekendSat: false, weekendSun: false, holidaysOn: false }
 };
 const NEUTRAL_ON = Object.keys(NEUTRAL).reduce((o, k) => ((o[k] = true), o), {});

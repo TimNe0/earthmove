@@ -102,6 +102,24 @@
   }
   // Shift windows, weekend working and holidays. Windows are intersected with each section's own hours (or replace them when asked);
   // a section keeps its first start and last end in P.ws/P.we, and its inner gaps in cal.win. Weekend flags only ADD working days.
+  // ---------- site constraints (C1-C5) ----------
+  // Built once in prepare. P.con exists only when some constraint is actually in force, so neutral settings run the untouched path.
+  function applyConstraints(scn, P) {
+    const mods = (scn.setup && scn.setup.modules) || {}, md = scn.modules || {}, con = { closed: null, maxDay: 0 };
+    const idx = {}; for (let i = 0; i < P.n; i++) idx[P.ids[i]] = i;
+    if (mods.C3) { // closed periods per section (or all sections); 'to' blank = closed for good
+      const closed = [];
+      for (const p of (md.C3 || {}).periods || []) {
+        const a = parseISO(p.from); if (a === null) continue;
+        const b = p.to ? parseISO(p.to) : null, from = a - P.startDay, to = b === null ? Infinity : b - P.startDay + 1;
+        const secs = !p.sec || p.sec === 'all' ? Array.from({ length: P.n }, (_, i) => i) : (idx[p.sec] !== undefined ? [idx[p.sec]] : []);
+        for (const i of secs) (closed[i] = closed[i] || []).push([from, to]);
+        if (to !== Infinity && to > con.maxDay) con.maxDay = to;
+      }
+      if (closed.some(Boolean)) con.closed = closed;
+    }
+    P.con = con.closed ? con : null;
+  }
   function snapWin(w, t) { for (let k = 0; k < w.length; k++) if (t < w[k][1]) return t > w[k][0] ? t : w[k][0]; return Infinity; } // earliest allowed start at or after t, or Infinity
   function applyCalendar(scn, P) {
     const mods = (scn.setup && scn.setup.modules) || {}, md = scn.modules || {};
@@ -133,7 +151,7 @@
       ids: [], names: [],
       len: new Float64Array(nn), chain: new Float64Array(nn), mid: new Float64Array(nn), qty: new Float64Array(nn),
       openDay: new Float64Array(nn), ws: new Int32Array(nn), we: new Int32Array(nn), loaders: new Int32Array(nn),
-      workDays: [], total: 0, srcs: [], dsts: [], destOrder: [], node: [], nodeIdx: [], cal: null
+      workDays: [], total: 0, srcs: [], dsts: [], destOrder: [], node: [], nodeIdx: [], cal: null, con: null
     };
     let c = 0;
     for (let i = 0; i < n; i++) {
@@ -151,6 +169,7 @@
     }
     P.total = c;
     applyCalendar(scn, P);
+    applyConstraints(scn, P);
     nodeDefs.forEach((nd, k) => {
       const x = n + k, r = nd.ref, a = hm(r.workStart), b = hm(r.workEnd);
       P.kind[x] = nd.kind; P.node[x] = r; P.nodeIdx.push(x);
@@ -162,7 +181,7 @@
       if (nd.kind === 1 || nd.kind === 3) P.srcs.push(x);
     });
     P.cfg = buildCfg(scn, P, uf);
-    P.cfg.full = !!(P.cfg.mat || P.cal); // jobs that use a module only the full dispatcher knows
+    P.cfg.full = !!(P.cfg.mat || P.cal || P.con); // jobs that use a module only the full dispatcher knows
     // per-source destination list, nearest first (ties by section order)
     for (const i of P.srcs) {
       P.destOrder[i] = P.dsts.slice().sort((a, b) => Math.abs(P.mid[a] - P.mid[i]) - Math.abs(P.mid[b] - P.mid[i]) || a - b);
@@ -375,7 +394,10 @@
     // calendar (D4): days off for the whole site, shift windows with gaps
     const cal = P.cal, dayOff = cal ? cal.dayOff : null, winMulti = !!(cal && cal.multi);
     let idleWork = -1; // working days since the last movement (days off do not count), for stuck detection
-    const works = (i, d, dow) => P.workDays[i][dow]; // does source i work on day d (weekday dow)?
+    const con = P.con, conClosed = !!(con && con.closed);
+    // closed periods (C3): is section i closed on day d, and if so on which day does it open again (Infinity = never)?
+    const closedUntil = (i, d) => { const r = conClosed ? con.closed[i] : null; if (r) for (let k = 0; k < r.length; k++) if (d >= r[k][0] && d < r[k][1]) return r[k][1]; return 0; };
+    const works = (i, d, dow) => P.workDays[i][dow] && !(conClosed && closedUntil(i, d)); // does source i work on day d (weekday dow)?
     const plan = opts.plan !== undefined ? opts.plan : activePlan(scn);
     const noLog = !!opts.noLog;
     const horizon = opts.horizonDays || 3650;
@@ -466,6 +488,7 @@
     let moves = 0, tonnesMoved = 0, tonneKm = 0, endTime = 0, fleetDelayMin = 0, tipWaitMin = 0, tipWaitMax = 0;
     let maxOpen = 0;
     for (const j of P.dsts) if (P.openDay[j] > maxOpen) maxOpen = P.openDay[j];
+    if (con && con.maxDay > maxOpen) maxOpen = con.maxDay; // a job waiting for a closure to end is not stuck
     let lastMove = 0, stuck = false, firstDay = -1, lastDay = -1, d = 0;
     const slots = []; for (let i = 0; i < nn; i++) slots.push(new Int32Array(P.loaders[i]));
     const rates = new Array(nn).fill(null); // per-slot excavator rate (B5 individual machines)
@@ -517,13 +540,17 @@
     // a fill not open on arrival, or, with B4, a tipping queue longer than the allowed limit), or null.
     function pick(i, departT, day, ty, svc, capT, mat) {
       const arcs = arcsBySrc[i];
-      let minWait = Infinity, qWait = false;
+      let minWait = Infinity, qWait = false, cWait = false;
       // can this load go to fill j now? returns tip end time, or sets minWait and returns -1
       const consider = (j, tr) => {
         if (P.openDay[j] > day + Math.floor((departT + tr) / DAY)) {
           const w = (P.openDay[j] - day) * DAY - tr - svc;
           if (w < minWait) minWait = w;
           return -1;
+        }
+        if (conClosed) { // the fill is in a closed period on the day the load would arrive: it waits for the reopening day
+          const re = closedUntil(j, day + Math.floor((departT + tr) / DAY));
+          if (re) { if (re !== Infinity) { const w = (re - day) * DAY - tr - svc; if (w < minWait) minWait = w; cWait = true; } return -1; }
         }
         if (!recv) return 0;
         const arr = day * DAY + departT + tr, ti = tipAt(j, arr, Math.min(capT, remSrc[i], M ? takeCap(j, mat) : freeNeed[j]));
@@ -542,7 +569,7 @@
           live++;
           if (consider(a.to, tripL(P, ty, i, a.to)) >= 0) return { j: a.to, arc: a };
         }
-        return live > 0 ? { wait: minWait, queue: qWait } : null; // planned destinations unavailable for now, or plan finished for this source
+        return live > 0 ? { wait: minWait, queue: qWait, con: cWait } : null; // planned destinations unavailable for now, or plan finished for this source
       }
       if (!M) { // plain job: the original inline loop (kept apart so the material helpers cost it nothing)
         const order = P.destOrder[i];
@@ -559,7 +586,7 @@
           if (te < bestTip) { bestTip = te; bestJ = j; } // with receiving rates: where it will finish tipping soonest (nearest wins ties)
         }
         if (bestJ >= 0) return { j: bestJ, arc: null };
-        return minWait === Infinity ? null : { wait: minWait, queue: qWait };
+        return minWait === Infinity ? null : { wait: minWait, queue: qWait, con: cWait };
       }
       const order = orderFor(i, mat), pkey = M.a2 ? i + '|' + mat : i;
       let p = (M.a2 ? ptrCache[pkey] : ptr[i]) || 0;
@@ -575,7 +602,7 @@
         if (te < bestTip) { bestTip = te; bestJ = j; } // with receiving rates: where it will finish tipping soonest (nearest wins ties)
       }
       if (bestJ >= 0) return { j: bestJ, arc: null };
-      return minWait === Infinity ? null : { wait: minWait, queue: qWait };
+      return minWait === Infinity ? null : { wait: minWait, queue: qWait, con: cWait };
     }
 
     // The next source to load: the one whose earliest free loading slot is soonest (ties by rank). A small function of its own,
@@ -661,7 +688,7 @@
           const e = pickExport(best, mat, d);
           if (e.x >= 0) pk = { j: e.x, arc: null };
         }
-        if (M && M.a5 && kBest === 0 && (!pk || (pk.wait !== undefined && !pk.queue && !(pk.wait < P.we[best] && pk.wait > bestT)))) {
+        if (M && M.a5 && kBest === 0 && (!pk || (pk.wait !== undefined && !pk.queue && !pk.con && !(pk.wait < P.we[best] && pk.wait > bestT)))) {
           // nowhere on site can take it and it cannot wait for a fill to open today: park it in the nearest stockpile with room (A5)
           const x = pickStock(best);
           if (x >= 0) pk = { j: x, arc: null, parked: !anyNeed(mat) };

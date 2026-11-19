@@ -94,6 +94,11 @@ function audit(name, scn) {
       if (P.cal.dayOff[day]) bad++;
       const w = i < P.n ? P.cal.win[i] : null; if (w && !w.some(x => tod >= x[0] && tod < x[1])) bad++;
     }
+    if (P.con && P.con.closed) { // closed periods (C3): never loaded from, and never tipped into, while closed
+      const inC = (q, d) => (P.con.closed[q] || []).some(r => d >= r[0] && d < r[1]);
+      if (i < P.n && inC(i, day)) bad++;
+      if (j < P.n && inC(j, Math.floor(L.tip[k] / 1440))) bad++;
+    }
     perDay[day] = (perDay[day] || 0) + 1;
     (slotEvents[i] = slotEvents[i] || []).push([L.start[k], 1], [L.depart[k], -1]);
   }
@@ -988,6 +993,40 @@ console.log('\n42. D4 CALENDAR: shifts, bank holidays (computed by rule), weeken
   // validation
   const bad = d4({ shifts: [{ start: '19:00', end: '07:00' }] });
   ok(Model.validate(bad).some(x => x.level === 'error' && /cannot run past midnight/.test(x.text) && x.cell && x.cell.mod === 'D4'), 'a shift that crosses midnight is rejected in plain English');
+}
+
+console.log('\n43. C3 CLOSED PERIODS: no loading from, and no tipping into, a closed section');
+{
+  const days = r => Array.from({ length: r.n }, (_, k) => Math.floor(r.log.start[k] / 1440)).join();
+  const c3 = periods => { const sc = tiny(); sc.settings.maxMovesPerDay = 3; return withMods(sc, { C3: true }, { C3: { periods: periods.map((p, i) => Object.assign({ id: 'p' + i }, p)) } }); };
+  const plain = Engine.simulate((() => { const x = tiny(); x.settings.maxMovesPerDay = 3; return x; })());
+  ok(days(plain) === '0,0,0,1,1', 'core, cap 3 a day: Monday 3, Tuesday 2');
+  // hand: the fill is closed on Tuesday only. Mon loads 1-3 tip 07:22, 07:32, 07:42. Tuesday every load would tip into the closed fill: nothing loads.
+  // Wednesday: loads 4 and 5 start 07:00 and 07:10 and tip 07:22 and 07:32.
+  const f = audit('C3 fill closed on Tuesday', c3([{ sec: 'b', from: '2027-01-12', to: '2027-01-12' }]));
+  ok(days(f) === '0,0,0,2,2' && hhmm(f.log.tip[4]) === '07:32', 'hand: the fill is closed Tuesday, so loads 4 and 5 move to Wednesday (tips 07:22 and 07:32)');
+  // the source closed Monday and Tuesday: first load Wednesday 07:00, then 3 on Wednesday and 2 on Thursday
+  const s = audit('C3 source closed Mon-Tue', c3([{ sec: 'a', from: '2027-01-11', to: '2027-01-12' }]));
+  ok(days(s) === '2,2,2,3,3' && hhmm(s.log.start[0]) === '07:00', 'hand: the cut is closed Mon and Tue, so loading starts Wednesday 07:00 (3 loads), then Thursday (2)');
+  // all sections closed on Tuesday behaves like a day off
+  const all = audit('C3 all sections closed Tuesday', c3([{ sec: 'all', from: '2027-01-12', to: '2027-01-12' }]));
+  ok(days(all) === '0,0,0,2,2', 'closing every section on Tuesday moves loads 4 and 5 to Wednesday');
+  ok(f.summary.endTime > plain.summary.endTime && s.summary.endTime > plain.summary.endTime, 'direction: closed periods make the programme later');
+  // closed for good (blank end date) from Tuesday: only Monday’s three loads, and the rest is reported, not hidden
+  const perm = Engine.simulate(c3([{ sec: 'b', from: '2027-01-12', to: '' }]));
+  ok(perm.n === 3 && perm.summary.stuck && !perm.summary.complete && Math.abs(perm.summary.unfilled - 40) < 1e-9, 'closed for good: 3 loads, then the job is reported stuck with 40 t of fill unfilled');
+  // a constraint wait never makes soil jump into a stockpile (only "the fill is not open yet" does)
+  const stk = c3([{ sec: 'b', from: '2027-01-12', to: '2027-01-12' }]); stk.setup.modules.A5 = true;
+  stk.modules.A5.stockpiles = [{ id: 'k1', name: 'Dump', chainageM: 1000, capacityT: 60, handleCostPerT: 2, lanes: 1 }];
+  const sr = Engine.simulate(stk);
+  ok(sr.msum.stockInT === 0 && days(sr) === '0,0,0,2,2', 'a closure does not park soil in a stockpile (nothing stockpiled, same timeline)');
+  const open = tiny(); open.settings.maxMovesPerDay = 3; open.sections[1].openFrom = '2027-01-13'; open.setup.modules.A5 = true; open.modules.A5.stockpiles = stk.modules.A5.stockpiles;
+  ok(Engine.simulate(open).msum.stockInT > 0, 'but a fill that is simply not open yet still uses the stockpile (unchanged behaviour)');
+  // validation and neutral settings
+  ok(Model.validate(c3([{ sec: 'b', from: 'nonsense', to: '' }])).some(x => x.level === 'error' && /start date is not a valid/.test(x.text)), 'a bad date is reported in plain English');
+  ok(Model.validate(c3([{ sec: 'b', from: '2027-01-12', to: '2027-01-10' }])).some(x => /ends before it starts/.test(x.text)), 'an end before the start is reported');
+  const hashOf = r => crypto.createHash('sha1').update(JSON.stringify([r.log.src, r.log.dst, r.log.start, r.log.tip, r.log.t])).digest('hex').slice(0, 12);
+  ok(hashOf(Engine.simulate(withMods(Model.exampleSimple(), { C3: true }, { C3: { periods: [] } }))) === hashOf(Engine.simulate(Model.exampleSimple())), 'C3 with no periods reproduces the core result');
 }
 
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
