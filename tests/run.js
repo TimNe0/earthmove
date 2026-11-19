@@ -591,6 +591,7 @@ console.log('\n33. PHASE 4 ENGINE SCAFFOLD: node arrays exist, the material laye
   const on = withMods(Model.normalise(sc), { A1: true, A2: true });
   on.modules.A2.accept.clay = { clay: true, rock: true };
   on.materials.find(m => m.id === 'rock').density = 2.4; on.materials.find(m => m.id === 'clay').density = 2.0;
+  on.materials.forEach(m => (m.compaction = 0.9)); // explicit, so the test does not depend on the default compaction
   const M = Engine.prepare(on).cfg.mat;
   ok(M && JSON.stringify(M.srcLines[0]) === '[{"m":"rock","t":60},{"m":"clay","t":40}]', 'cut lines are kept in dig order, in tonnes');
   ok(JSON.stringify(M.dstLines[1]) === '[{"req":"clay","needT":70},{"req":"rock","needT":30}]' && M.srcLines[1].length === 0, 'fill lines carry their required class and need');
@@ -920,6 +921,18 @@ console.log('\n40. PHASE 4 SWEEP: the Materials example, every combination of A1
   const o1 = runOpt(Model.exampleMaterials(), 'tonneKm', 1e9, { maxIter: 25 }), o2 = runOpt(Model.exampleMaterials(), 'tonneKm', 1e9, { maxIter: 25 });
   ok(JSON.stringify(o1.plan) === JSON.stringify(o2.plan) && o1.after.placedT >= o1.before.placedT - 1e-6, 'the optimiser is deterministic and keeps the soil placed on the Materials example');
   if (o1.plan) { const pl = Model.exampleMaterials(); pl.plan = o1.plan; audit('Materials example with an optimised plan', pl); }
+}
+
+console.log('\n41. A1 AND A3 AT THEIR DEFAULTS CHANGE NO QUANTITY (Standard level), in tonnes and in m3');
+{
+  const hashOf = s => crypto.createHash('sha1').update(JSON.stringify([s.log.src, s.log.dst, s.log.start, s.log.tip, s.log.t])).digest('hex').slice(0, 12);
+  [['tonnes', Model.exampleSimple()], ['m3', (() => { const x = Model.exampleSimple(); Model.setUnits(x, 'm3'); return x; })()]].forEach(([u, base]) => {
+    const on = withMods(base, { A1: true, A3: true });
+    const a = Engine.simulate(base), b = Engine.simulate(on);
+    ok(a.summary.totalCut === b.summary.totalCut && a.summary.totalFill === b.summary.totalFill, u + ': cut and fill tonnes are identical with A1 and A3 on');
+    ok(hashOf(a) === hashOf(b), u + ': the movement log is identical with A1 and A3 on');
+  });
+  ok(Model.defaultMaterial({ density: 1.8 }).compaction === 1, 'a new material has compaction 1.0');
 }
 
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');

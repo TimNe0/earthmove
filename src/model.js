@@ -9,7 +9,7 @@
   // A material is also a placement class (A2). Density is t per m3, bulking is loose/bank volume, compaction is compacted/bank volume.
   function defaultMaterial(st, id) {
     return { id: id || 'general', name: id && id !== 'general' ? id : 'General fill', colour: '#a0855b',
-             density: +(st && st.density) > 0 ? +st.density : 1.8, bulking: 1.25, compaction: 0.9 };
+             density: +(st && st.density) > 0 ? +st.density : 1.8, bulking: 1.25, compaction: 1.0 };  // compaction 1.0: ticking A1 at its defaults changes no quantity
   }
   const MOD_IDS = ['A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6'];
 
