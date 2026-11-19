@@ -252,6 +252,20 @@
           if (!same) add('warn', (s.name || 'A section') + ' can only ' + (q > 0 ? 'send its soil to' : 'receive soil from') + ' the other side of ' + nm + ', so it cannot start before ' + when + '.', mc(b.id + ':openDate'));
         });
       });
+    } else if (id === 'C2') {
+      const tot = scn.sections.reduce((a, x) => a + (+x.lengthM || 0), 0);
+      (m.stretches || []).forEach(x => {
+        const nm = x.name || 'A single-lane stretch';
+        if (!(+x.fromM >= 0 && +x.toM <= tot && +x.fromM < +x.toM)) add('error', nm + ': it must start before it ends, both between 0 and ' + Math.round(tot) + ' m (the length of the road).', mc(x.id + ':fromM'));
+        if (x.mode === 'alternate') { if (!(Math.floor(+x.phaseMin) >= 1)) add('error', nm + ': the phase length must be at least 1 minute.', mc(x.id + ':phaseMin')); }
+        else if (!(Math.floor(+x.perHour) >= 1)) add('error', nm + ': the limit must be at least 1 lorry per hour.', mc(x.id + ':perHour'));
+      });
+    } else if (id === 'C5') {
+      const tot = scn.sections.reduce((a, x) => a + (+x.lengthM || 0), 0);
+      if (!(+m.publicLimit >= 0)) add('error', 'The public-road daily limit must be 0 or more.', mc('publicLimit'));
+      if (m.internalLimit !== '' && m.internalLimit !== undefined && !(+m.internalLimit >= 0)) add('error', 'The internal daily limit must be 0 or more, or left blank for no extra limit.', mc('internalLimit'));
+      (m.publicStretches || []).forEach(x => { if (!(+x.fromM >= 0 && +x.toM <= tot && +x.fromM < +x.toM)) add('error', (x.name || 'A public-road stretch') + ': it must start before it ends, both between 0 and ' + Math.round(tot) + ' m.', mc(x.id + ':fromM')); });
+      if (!m.publicAll && !(m.publicStretches || []).length && !(scn.setup.modules.A4 && ((scn.modules.A4 || {}).points || []).length)) add('warn', 'No public-road stretches are listed (and not every movement is marked public), so no movement counts as public and the public limit has no effect.', mc('publicLimit'));
     } else if (id === 'C4') {
       const chk = (n, w, nm, cell) => {
         if (!(Math.floor(+n) >= 1)) add('error', nm + ': the number of layers must be a whole number of at least 1.', cell('layers'));

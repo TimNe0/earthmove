@@ -105,7 +105,7 @@
   // ---------- site constraints (C1-C5) ----------
   // Built once in prepare. P.con exists only when some constraint is actually in force, so neutral settings run the untouched path.
   function applyConstraints(scn, P) {
-    const mods = (scn.setup && scn.setup.modules) || {}, md = scn.modules || {}, con = { closed: null, blocks: null, layers: null, maxDay: 0 };
+    const mods = (scn.setup && scn.setup.modules) || {}, md = scn.modules || {}, con = { closed: null, blocks: null, layers: null, lanes: null, pub: null, maxDay: 0 };
     const idx = {}; for (let i = 0; i < P.n; i++) idx[P.ids[i]] = i;
     if (mods.C3) { // closed periods per section (or all sections); 'to' blank = closed for good
       const closed = [];
@@ -136,7 +136,23 @@
       }
       if (any) con.layers = { N, W };
     }
-    P.con = con.closed || con.blocks || con.layers ? con : null;
+    if (mods.C2) { // single-lane stretches: a cap on entries per clock hour, or alternating directions in phases
+      const ls = [];
+      for (const st of (md.C2 || {}).stretches || []) {
+        const a = Math.min(+st.fromM, +st.toM), b = Math.max(+st.fromM, +st.toM); if (!isFinite(a) || !isFinite(b) || !(b > a)) continue;
+        ls.push({ a, b, alt: st.mode === 'alternate', perHour: Math.max(1, Math.floor(+st.perHour) || 1), phase: Math.max(1, Math.floor(+st.phaseMin) || 15) });
+      }
+      ls.sort((x, y) => x.a - y.a);
+      if (ls.length) con.lanes = ls;
+    }
+    if (mods.C5) { // public vs internal movements: a daily cap on public-road movements (and optionally on internal ones)
+      const b = md.C5 || {}, st = (b.publicStretches || []).map(x => [Math.min(+x.fromM, +x.toM), Math.max(+x.fromM, +x.toM)]).filter(x => isFinite(x[0]) && isFinite(x[1]) && x[1] > x[0]);
+      const lim = b.publicLimit !== '' && b.publicLimit !== undefined && +b.publicLimit >= 0 ? +b.publicLimit : Infinity;
+      const il = b.internalLimit !== '' && b.internalLimit !== undefined && +b.internalLimit >= 0 ? +b.internalLimit : Infinity;
+      const gates = !!(mods.A4 && ((md.A4 || {}).points || []).length); // off-site gates are on public roads by definition
+      if (b.publicAll || st.length || il < Infinity || gates) con.pub = { all: !!b.publicAll, st, limit: lim, intLimit: il };
+    }
+    P.con = con.closed || con.blocks || con.layers || con.lanes || con.pub ? con : null;
   }
   function snapWin(w, t) { for (let k = 0; k < w.length; k++) if (t < w[k][1]) return t > w[k][0] ? t : w[k][0]; return Infinity; } // earliest allowed start at or after t, or Infinity
   function applyCalendar(scn, P) {
@@ -225,9 +241,9 @@
     let defs = null;
     if (mods.B2) {
       const ts = ((md.B2 || {}).types || []).filter(t => Math.floor(+t.qty) > 0 && +t.payload > 0);
-      if (ts.length) defs = ts.map(t => ({ name: t.name, payload: +t.payload * uf, vL: num(t.speedLoaded, baseL), vE: num(t.speedEmpty, baseE), qty: Math.floor(+t.qty), body: num(t.bodyM3, a1body) }));
+      if (ts.length) defs = ts.map(t => ({ name: t.name, payload: +t.payload * uf, vL: num(t.speedLoaded, baseL), vE: num(t.speedEmpty, baseE), qty: Math.floor(+t.qty), body: num(t.bodyM3, a1body), pub: t.publicRoad !== false }));
     }
-    if (!defs) defs = [{ name: 'Lorry', payload: P.loadT, body: a1body, vL: baseL, vE: baseE, qty: mods.B1 ? Math.max(1, Math.floor(num((md.B1 || {}).fleet, 1))) : Infinity }];
+    if (!defs) defs = [{ name: 'Lorry', payload: P.loadT, body: a1body, pub: true, vL: baseL, vE: baseE, qty: mods.B1 ? Math.max(1, Math.floor(num((md.B1 || {}).fleet, 1))) : Infinity }];
     c.useFleet = !!mods.B1 || defs[0].qty !== Infinity;
     c.simple = !(mods.B2 || mods.B3 || c.uLorry !== 1);
     // per-section speed limit and gradient factors (B3, "vary by section")
@@ -253,7 +269,7 @@
       return { mid, start, mpm: mpmA };
     };
     c.types = defs.map(d => {
-      const t = { name: d.name, payload: d.payload, qty: d.qty, body: d.body };
+      const t = { name: d.name, payload: d.payload, qty: d.qty, body: d.body, pub: d.pub };
       if (!c.simple) { const l = cum(d.vL, gL), e = cum(d.vE, gE); t.cumL = l.mid; t.cumE = e.mid; t.eStart = e.start; t.eMpm = e.mpm; t.lStart = l.start; t.lMpm = l.mpm; }
       return t;
     });
@@ -493,6 +509,7 @@
         const acc = P.node[x].accepts || [];
         if (acc.length && acc.indexOf(m) < 0) continue;
         if (nodeAvail(x, day) <= EPS) { full = true; continue; }
+        if (conPub && pubBarred(i, x, ty)) continue;
         if (conBlocks) { const bw = blockWait(i, x, day, departT, ty, svc); if (bw !== null) { if (wait === null || bw < wait) wait = bw; continue; } } // across a blockage that is still closed
         const dd = Math.abs(P.mid[i] - P.mid[x]);
         if (dd < bd) { bd = dd; bx = x; }
@@ -510,7 +527,7 @@
     const stockSpace = x => (+P.node[x].capacityT > 0 ? +P.node[x].capacityT : 0) - stockTot[x];
     function pickStock(i, day, departT, ty, svc) { // nearest stockpile with room
       let bx = -1, bd = Infinity;
-      for (const x of stockList) { if (stockSpace(x) <= EPS) continue; if (conBlocks && blockWait(i, x, day, departT, ty, svc) !== null) continue; const dd = Math.abs(P.mid[i] - P.mid[x]); if (dd < bd) { bd = dd; bx = x; } }
+      for (const x of stockList) { if (stockSpace(x) <= EPS) continue; if (conPub && pubBarred(i, x, ty)) continue; if (conBlocks && blockWait(i, x, day, departT, ty, svc) !== null) continue; const dd = Math.abs(P.mid[i] - P.mid[x]); if (dd < bd) { bd = dd; bx = x; } }
       return bx;
     }
     const ordCache = {}, ptrCache = {};
@@ -551,8 +568,10 @@
     // Earliest a lorry can be at source i, ready to load (it drives empty from where it last tipped). Exact recomputation.
     function freshen(i) {
       let bk = -1, bt = Infinity, bp = -1;
+      const np = conPub ? allPubNow(i) : false;
       for (let k = 0; k < nL; k++) {
         const t = types[lType[k]];
+        if (np && !t.pub) continue;
         let r = lFree[k] + (lLoc[k] === -1 ? 0 : lLoc[k] === DEPOT ? tripX(P, t, cfg.depot.x, i) : tripE(P, t, lLoc[k], i));
         if (conBlocks && lLoc[k] !== -1) { // an empty lorry cannot pass a blockage that is still closed either
           let lo = lLoc[k] === DEPOT ? cfg.depot.x : P.mid[lLoc[k]], hi = P.mid[i]; if (lo > hi) { const q = lo; lo = hi; hi = q; }
@@ -595,6 +614,7 @@
           if (w < minWait) minWait = w;
           return -1;
         }
+        if (conPub && pubBarred(i, j, ty)) return -1; // today's public (or internal) allowance is used up, or this lorry type may not use public roads
         if (conBlocks) { const bw = blockWait(i, j, day, departT, ty, svc); if (bw !== null) { if (bw < minWait) minWait = bw; cWait = true; return -1; } }
         if (conLayers && layN[j] > 1 && layOpen[j] > day * DAY + departT + tr) { // the next layer is still in its waiting period
           const w = layOpen[j] - day * DAY - tr - svc; if (w < minWait) minWait = w; cWait = true; return -1;
@@ -673,10 +693,52 @@
       }
       selBest = best; selT = bestT; selSlot = bestSlot; selSlotT = bestSlotT;
     }
+    // ---- C2 single-lane stretches and C5 public/internal movements ----
+    const conLanes = con && con.lanes, conPub = con && con.pub;
+    const CL = (conLanes || conPub) && !opts.noLog ? { lane: [], pub: [] } : null; // what the constraints did, for the audit tests
+    const laneCnt = conLanes ? conLanes.map(() => ({})) : null; // per stretch: entries booked per clock hour
+    let pubUsed = 0, intUsed = 0;
+    const pubMemo = conPub ? new Int8Array(nn * nn).fill(-1) : null;
+    function isPub(i, j) { // does a movement from i to j use a public road?
+      let v = pubMemo[i * nn + j];
+      if (v < 0) {
+        v = conPub.all || P.kind[i] === 1 || P.kind[i] === 2 || P.kind[j] === 1 || P.kind[j] === 2 ? 1 : 0;
+        if (!v) { const lo = Math.min(P.mid[i], P.mid[j]), hi = Math.max(P.mid[i], P.mid[j]); for (const r of conPub.st) if (r[1] > lo && r[0] < hi) { v = 1; break; } }
+        pubMemo[i * nn + j] = v;
+      }
+      return v === 1;
+    }
+    const pubBarred = (i, j, ty) => (isPub(i, j) ? pubUsed >= conPub.limit || !ty.pub : intUsed >= conPub.intLimit); // may this load not go today?
+    // is every fill that still needs soil reachable from i only by a public road? (then a lorry type barred from public roads is of no use to i right now)
+    const allPubNow = i => { let any = false; for (const j of P.dsts) if (freeNeed[j] > EPS) { any = true; if (!isPub(i, j)) return false; } return any; };
+    // earliest time a lorry may enter stretch si at time t going in direction dir (+1 = rising chainage) through a stretch it needs `transit` minutes to cross
+    function laneEntry(si, t, dir, transit) {
+      const s = conLanes[si];
+      if (!s.alt) { const cnt = laneCnt[si]; let h = Math.floor(t / 60); const h0 = h; while ((cnt[h] || 0) >= s.perHour) h++; return h === h0 ? t : h * 60; }
+      const T = s.phase, okDir = q => (q % 2 === 0) === (dir > 0), p = Math.floor(t / T);
+      if (okDir(p) && (transit >= T || t + transit <= (p + 1) * T)) return t; // right direction, and it clears the stretch before the phase ends
+      let q = p + 1; while (!okDir(q)) q++;
+      return q * T;
+    }
+    // minutes a loaded trip i -> j is delayed by the stretches on its route; commit = book the entries
+    function laneDelay(i, j, day, departT, ty, commit) {
+      let lo = P.mid[i], hi = P.mid[j]; const dir = hi >= lo ? 1 : -1; if (lo > hi) { const t = lo; lo = hi; hi = t; }
+      let delay = 0;
+      for (let q = 0; q < conLanes.length; q++) {
+        const si = dir > 0 ? q : conLanes.length - 1 - q, s = conLanes[si], ea = Math.max(lo, s.a), eb = Math.min(hi, s.b);
+        if (!(eb > ea)) continue;
+        const tin = tripLx(P, ty, i, dir > 0 ? ea : eb), tout = tripLx(P, ty, i, dir > 0 ? eb : ea), transit = Math.abs(tout - tin);
+        const t0 = day * DAY + departT + tin + delay, entry = laneEntry(si, t0, dir, transit);
+        delay += entry - t0;
+        if (commit) { if (!s.alt) { const h = Math.floor(entry / 60); laneCnt[si][h] = (laneCnt[si][h] || 0) + 1; } if (CL) CL.lane.push({ k: moves, s: si, entry, dir, transit }); }
+      }
+      return delay;
+    }
     for (d = 0; d < horizon; d++) {
       if (totalRem <= EPS && !(hasImp && P.srcs.some(x => x >= n && remSrc[x] > EPS) && P.dsts.some(j => freeNeed[j] > EPS))) break;
       if (dayOff && dayOff[d]) continue; // a day off for the whole site: nothing loads, and it is not an idle working day
       idleWork++;
+      pubUsed = 0; intUsed = 0;
       if (d > maxOpen + 14 && idleWork > 14) { stuck = true; break; }
       const dow = dowOf(P.startDay + d);
       const base = d * DAY;
@@ -758,7 +820,8 @@
         let tonnes = j >= n ? Math.min(capT, remSrc[best], kJ === 2 ? nodeAvail(j, d) : stockSpace(j)) : Math.min(capT, remSrc[best], takeCap(j, mat));
         let dLine = -1, consume = 0;
         if (pk.arc) tonnes = Math.min(tonnes, pk.arc.rem);
-        const arrAbs = base + departT + tripL(P, ty, best, j);
+        const ld = conLanes ? laneDelay(best, j, d, departT, ty, true) : 0; // waiting for a single-lane stretch delays the arrival
+        const arrAbs = base + departT + tripL(P, ty, best, j) + ld;
         let tipAbs = arrAbs;
         if (kJ === 2) tipAbs = arrAbs + Math.max(0, Math.round(+P.node[j].roundTripMin || 0)); // export: the lorry is back at the gate after its off-site round trip
         else if (recv && j < n) { // queue for a tipping bay, then tip at the section's receiving rate
@@ -809,6 +872,7 @@
         if (base + departT > lastDepart[best]) lastDepart[best] = base + departT;
         if (tipAbs > lastTip[j]) lastTip[j] = tipAbs;
         if (tipAbs > endTime) endTime = tipAbs;
+        if (conPub) { const pb = isPub(best, j); if (pb) pubUsed++; else intUsed++; if (CL) CL.pub.push(pb ? 1 : 0); }
         moves++; tonnesMoved += tonnes; tonneKm += tonnes * dist(P, best, j) / 1000;
         used++; lastMove = d; idleWork = 0;
         if (firstDay < 0) firstDay = d;
@@ -870,7 +934,7 @@
     const reached = sections.filter(s => s.type !== 'none' && s.levelTime !== null);
     summary.completion = reached.length ? reached.reduce((mx, s) => Math.max(mx, s.levelTime), 0) : null;
     summary.completionDay = summary.completion === null ? null : Math.floor(summary.completion / DAY);
-    return { P, log: L, n: moves, daily, sections, summary, msum, mlog: ML };
+    return { P, log: L, n: moves, daily, sections, summary, msum, mlog: ML, clog: CL };
   }
 
   // ---- the original dispatcher, for jobs with no material module (see simulate above and tests/diff.js) ----

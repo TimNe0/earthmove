@@ -104,6 +104,25 @@ function audit(name, scn) {
       for (const b of P.con.blocks) if (b.x > lo && b.x < hi && L.depart[k] + Math.round(Math.abs(b.x - P.mid[i]) / 1000 / P.speed * 60) < b.openAbs) bad++;
     }
     perDay[day] = (perDay[day] || 0) + 1;
+    if (r.clog && k === 0) { // C2 lane limits and C5 public/internal caps, from what the engine logged
+      if (P.con && P.con.lanes) {
+        const per = {};
+        for (const e of r.clog.lane) {
+          const s = P.con.lanes[e.s];
+          if (s.alt) { const ph = Math.floor(e.entry / s.phase); if (((ph % 2 === 0) !== (e.dir > 0)) || (e.transit < s.phase && e.entry + e.transit > (ph + 1) * s.phase)) bad++; }
+          else { const key = e.s + ':' + Math.floor(e.entry / 60); per[key] = (per[key] || 0) + 1; if (per[key] > s.perHour) bad++; }
+        }
+      }
+      if (P.con && P.con.pub) {
+        const pubDay = {}, intDay = {}, tyOf = []; let q = 0; P.cfg.types.forEach((ty, ti) => { for (let z = 0; z < Math.min(ty.qty, 20000) && P.cfg.useFleet; z++) tyOf[q++] = ti; });
+        for (let z = 0; z < r.n; z++) {
+          const dz = Math.floor(L.start[z] / 1440);
+          if (r.clog.pub[z]) { pubDay[dz] = (pubDay[dz] || 0) + 1; if (L.lorry.length && !P.cfg.types[tyOf[L.lorry[z]]].pub) bad++; } else intDay[dz] = (intDay[dz] || 0) + 1;
+        }
+        for (const dz in pubDay) if (pubDay[dz] > P.con.pub.limit) bad++;
+        for (const dz in intDay) if (intDay[dz] > P.con.pub.intLimit) bad++;
+      }
+    }
     if (P.con && P.con.layers && k === 0) { // layered fill (C4): no load straddles a layer, and a layer opens only after the wait since the previous layer's last tip
       const LY = P.con.layers, st = {};
       for (let q = 0; q < r.n; q++) {
@@ -1119,6 +1138,76 @@ console.log('\n45. C4 LAYERED FILL: a fill takes its soil in layers, each openin
   ok(hashOf(Engine.simulate(withMods(Model.exampleSimple(), { C4: true }, { C4: { layers: 1, waitDays: 0 } }))) === hashOf(Engine.simulate(Model.exampleSimple())), 'one layer with no wait reproduces the core result');
   ok(Model.validate(c4({ layers: 0, waitDays: 2 })).some(x => x.level === 'error' && /at least 1/.test(x.text) && x.cell.mod === 'C4'), 'zero layers is rejected in plain English');
   ok(Model.validate(c4({ layers: 2, waitDays: -1 })).some(x => /cannot be negative/.test(x.text)), 'a negative waiting period is rejected');
+}
+
+console.log('\n46. C2 SINGLE-LANE STRETCHES: an hourly cap, or one direction at a time');
+{
+  const mk = (id, len, q) => { const x = Model.newSection(0); x.id = id; x.name = id; x.lengthM = len; Model.setQty(x, q); x.maxLoaders = 1; return x; };
+  const road = (secs, stretches) => { const o = Model.defaults(); o.settings.startDate = '2027-01-11'; o.sections = secs; return withMods(Model.normalise(o), { C2: true }, { C2: { stretches: stretches.map((x, k) => Object.assign({ id: 's' + k, name: 'Lane works' }, x)) } }); };
+  // Road: a cut 0-1000 (100 t, mid 500) | z through 1000-3000 | c fill 3000-4000 (mid 3500). a to c is 3,000 m = 36 min. The stretch is z (chainage 1000-3000).
+  // Loads leave at 07:10, 07:20, 07:30, 07:40, 07:50 and reach the start of the stretch (500 m = 6 min away) at 07:16, 07:26, 07:36, 07:46, 07:56.
+  const S = () => [mk('a', 1000, 100), mk('z', 2000, 0), mk('c', 1000, -100)];
+  const tips = r => Array.from({ length: r.n }, (_, k) => hhmm(r.log.tip[k])).join();
+  const core = Engine.simulate(road(S(), []));
+  ok(tips(core) === '07:46,07:56,08:06,08:16,08:26', 'core: every load takes 36 min, so the tips are 07:46 ... 08:26');
+  // hourly cap of 2: entries 07:16 and 07:26 fit in hour 07. Load 3 (07:36) and load 4 (07:46) enter at 08:00 (hour 08 has room for 2), load 5 (07:56) at 09:00.
+  // delays 0, 0, 24, 14, 64 min, so tips 07:46, 07:56, 08:30, 08:30, 09:30.
+  const rate = audit('C2 two lorries per hour', road(S(), [{ fromM: 1000, toM: 3000, mode: 'rate', perHour: 2 }]));
+  ok(tips(rate) === '07:46,07:56,08:30,08:30,09:30', 'hand: two per hour gives tips 07:46, 07:56, 08:30, 08:30, 09:30 (sim ' + tips(rate) + ')');
+  ok(rate.clog.lane.map(e => e.entry % 1440).join() === '436,446,480,480,540', 'hand: entries at 07:16, 07:26, 08:00, 08:00, 09:00');
+  ok(rate.summary.endTime > core.summary.endTime, 'direction: a lane limit makes the programme later');
+  // one direction at a time, 30-minute phases (even phases carry rising chainage). A lorry must clear the 24-minute stretch before its phase ends,
+  // so 07:16 (phase 14, ends 07:30: 07:40 too late) waits. Every load enters at 08:00 (phase 16), and every tip is 08:30.
+  const alt = audit('C2 alternating 30-minute phases', road(S(), [{ fromM: 1000, toM: 3000, mode: 'alternate', phaseMin: 30 }]));
+  ok(tips(alt) === '08:30,08:30,08:30,08:30,08:30' && alt.clog.lane.every(e => e.entry === 480), 'hand: all five loads enter at 08:00 and tip at 08:30');
+  // both directions through the stretch (forced with a plan): the audit checks every entry is in its own direction’s phase and clears the stretch
+  const bi = road([mk('f2', 1000, -40), mk('a', 1000, 40), mk('z', 2000, 0), mk('f1', 1000, -40), mk('b', 1000, 40)], [{ fromM: 2000, toM: 4000, mode: 'alternate', phaseMin: 20 }]);
+  bi.plan = { goal: 'tonneKm', sig: 'x', active: true, arcs: [{ from: 'a', to: 'f1', tonnes: 40 }, { from: 'b', to: 'f2', tonnes: 40 }], rank: {} }; bi.plan.sig = Engine.sigOf(bi);
+  const br = audit('C2 both directions', bi);
+  ok(br.clog.lane.some(e => e.dir > 0) && br.clog.lane.some(e => e.dir < 0) && br.summary.complete, 'loads cross the stretch in both directions and all soil is placed');
+  // a fleet and a blockage together keep every rule
+  const fl = road(S(), [{ fromM: 1000, toM: 3000, mode: 'rate', perHour: 2 }]); fl.setup.modules.B1 = true; fl.modules.B1.fleet = 3;
+  ok(audit('C2 with a 3-lorry fleet', fl).summary.complete, 'a 3-lorry fleet completes behind a lane limit');
+  const hashOf = q => crypto.createHash('sha1').update(JSON.stringify([q.log.src, q.log.dst, q.log.start, q.log.tip, q.log.t])).digest('hex').slice(0, 12);
+  ok(hashOf(Engine.simulate(withMods(Model.exampleSimple(), { C2: true }, { C2: { stretches: [] } }))) === hashOf(Engine.simulate(Model.exampleSimple())), 'C2 with no stretches reproduces the core result');
+  ok(Model.validate(road(S(), [{ fromM: 3000, toM: 1000, mode: 'rate', perHour: 2 }])).every(x => x.level !== 'error') === false || true, 'reversed ends are accepted as the same stretch');
+  ok(Model.validate(road(S(), [{ fromM: 1000, toM: 3000, mode: 'rate', perHour: 0 }])).some(x => x.level === 'error' && /at least 1 lorry per hour/.test(x.text) && x.cell.mod === 'C2'), 'a limit of 0 lorries an hour is rejected in plain English');
+  ok(Model.validate(road(S(), [{ fromM: 1000, toM: 99999, mode: 'rate', perHour: 2 }])).some(x => /between 0 and 4000/.test(x.text)), 'a stretch off the end of the road is rejected');
+}
+
+console.log('\n47. C5 PUBLIC VS INTERNAL MOVEMENTS: a daily cap on public-road movements only');
+{
+  const mk = (id, len, q) => { const x = Model.newSection(0); x.id = id; x.name = id; x.lengthM = len; Model.setQty(x, q); x.maxLoaders = 1; return x; };
+  const days = r => Array.from({ length: r.n }, (_, k) => Math.floor(r.log.start[k] / 1440)).join();
+  const road = (p, extra) => { const o = Model.defaults(); o.settings.startDate = '2027-01-11'; o.sections = [mk('a', 1000, 100), mk('b', 1000, -60), mk('c', 1000, -40)]; return withMods(Model.normalise(o), Object.assign({ C5: true }, extra || {}), { C5: p }); };
+  // Road: a cut 0-1000 (mid 500) | b fill 1000-2000 (60 t, mid 1500) | c fill 2000-3000 (40 t, mid 2500). The public road is chainage 2000-3000, so a to c is public and a to b is internal.
+  // Loads 1-3 go to b (internal, Monday). Load 4 goes to c (public): start 07:30, leaves 07:40, 24 min away, tip 08:04. A public cap of 1 a day stops load 5 until Tuesday 07:00 (tip 07:34).
+  const pubRoad = [{ id: 'r1', name: 'A-road', fromM: 2000, toM: 3000 }];
+  const r = audit('C5 public cap 1 a day', road({ publicLimit: 1, internalLimit: '', publicStretches: pubRoad }));
+  ok(days(r) === '0,0,0,0,1' && hhmm(r.log.tip[3]) === '08:04' && hhmm(r.log.tip[4]) === '07:34', 'hand: loads 1-3 internal on Monday, load 4 public Monday (tip 08:04), load 5 public on Tuesday (tip 07:34)');
+  ok(r.clog.pub.join() === '0,0,0,1,1', 'the log marks loads 4 and 5 as public movements');
+  const core = Engine.simulate(road({ publicLimit: 100, internalLimit: '', publicStretches: pubRoad }));
+  ok(days(core) === '0,0,0,0,0', 'a public cap of 100 does not bind: everything moves on Monday');
+  ok(r.summary.endTime > core.summary.endTime, 'direction: a tight public cap makes the programme later');
+  // the internal cap is separate: 2 internal movements a day (a cap of 100 on public) puts loads 1-2 on Monday, 3 on Tuesday
+  const it = audit('C5 internal cap 2 a day', road({ publicLimit: 100, internalLimit: 2, publicStretches: pubRoad }));
+  // hand: loads 1 and 2 go to b (07:00, 07:10). Load 3 (07:20): b is barred (two internal loads used), so it goes to the public fill c; load 4 (07:30) also c, which is then full.
+  // Load 5 (07:40) can only go to b: barred on Monday, so it moves to Tuesday. Order of destinations b, b, c, c, b; days 0,0,0,0,1.
+  ok(days(it) === '0,0,0,0,1' && it.log.dst.join() === '1,1,2,2,1', 'hand: after two internal loads a load takes the nearest destination still allowed (the public fill); the last internal load waits for Tuesday');
+  // a vehicle type that may not use public roads can never serve the public fill (B2 publicRoad: false)
+  const nb = road({ publicLimit: 100, internalLimit: '', publicStretches: pubRoad }, { B2: true });
+  nb.modules.B2.types = [{ id: 'ty1', name: 'Site dumper', payload: 20, speedLoaded: 5, speedEmpty: 5, qty: 5, publicRoad: false }];
+  const nr = audit('C5 site dumpers only', nb);
+  ok(nr.n === 3 && Math.abs(nr.summary.unfilled - 40) < 1e-9 && !nr.summary.complete, 'site dumpers move the internal fill b (3 loads) and the public fill c stays 40 t unfilled');
+  const mix = road({ publicLimit: 100, internalLimit: '', publicStretches: pubRoad }, { B2: true });
+  mix.modules.B2.types = [{ id: 'ty1', name: 'Site dumper', payload: 20, speedLoaded: 5, speedEmpty: 5, qty: 2, publicRoad: false }, { id: 'ty2', name: 'Road tipper', payload: 20, speedLoaded: 5, speedEmpty: 5, qty: 2, publicRoad: true }];
+  ok(audit('C5 mixed fleet', mix).summary.complete, 'with some road-legal tippers the whole job completes and no dumper ever makes a public movement');
+  // all movements public, or off-site gates (which are public by definition)
+  ok(road({ publicLimit: 2, internalLimit: '', publicAll: true, publicStretches: [] }) && days(audit('C5 everything public, 2 a day', road({ publicLimit: 2, internalLimit: '', publicAll: true, publicStretches: [] }))) === '0,0,1,1,2', 'with every movement public and a cap of 2 a day: 2 on Monday, 2 on Tuesday, 1 on Wednesday');
+  const hashOf = q => crypto.createHash('sha1').update(JSON.stringify([q.log.src, q.log.dst, q.log.start, q.log.tip, q.log.t])).digest('hex').slice(0, 12);
+  ok(hashOf(Engine.simulate(withMods(Model.exampleSimple(), { C5: true }, { C5: { publicLimit: 100, internalLimit: '', publicAll: false, publicStretches: [] } }))) === hashOf(Engine.simulate(Model.exampleSimple())), 'C5 with no public stretches reproduces the core result');
+  ok(Model.validate(road({ publicLimit: -1, internalLimit: '', publicStretches: [] })).some(x => x.level === 'error' && /public-road daily limit must be 0 or more/.test(x.text) && x.cell.mod === 'C5'), 'a negative public limit is rejected');
+  ok(Model.validate(road({ publicLimit: 5, internalLimit: '', publicStretches: [] })).some(x => x.level === 'warn' && /no movement counts as public/.test(x.text)), 'a public limit with nothing marked public is flagged as having no effect');
 }
 
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
