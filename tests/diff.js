@@ -96,7 +96,7 @@ function snapshot(E, sc) {
   if (s.plan) s.plan.sig = E.sigOf(s);
   const r = E.simulate(s);
   const out = { summary: r.summary, n: r.n, daily: r.daily, sections: r.sections, log: r.log };
-  if (r.log) { out.chart = E.chartData(r); out.trucks = E.truckStats(r); out.series = E.buildSeries(r); }
+  if (r.log) { out.chart = E.chartData(r); out.trucks = E.truckStats(r); out.series = E.buildSeries(r); (out.chart.pairs || []).forEach(p => delete p.mat); } // the material layer adds the band's material to chart pairs; nothing else may differ
   const noLog = E.simulate(s, { noLog: true });
   out.fast = { summary: noLog.summary, n: noLog.n };
   return JSON.parse(plain(out));

@@ -905,7 +905,7 @@ console.log('\n40. PHASE 4 SWEEP: the Materials example, every combination of A1
   ok(combos === 31 && anyBad === 0, 'all 31 combinations of A1-A5 run cleanly');
   // switching every module off gives back the plain job
   const off = Model.exampleMaterials(); ['A1', 'A2', 'A3', 'A4', 'A5'].forEach(id => (off.setup.modules[id] = false));
-  const offR = Engine.simulate(off); ok(offR.msum === null && offR.P.cfg.mat === null && offR.summary.totalFill === 154000, 'all A off: no material layer, and the quantities are those of the plain road');
+  const offR = Engine.simulate(off); ok(!offR.msum && offR.P.cfg.mat === null && offR.summary.totalFill === 154000, 'all A off: no material layer, and the quantities are those of the plain road');
   // save and load
   const back = Model.normalise(JSON.parse(JSON.stringify(ex)));
   ok(hashOf(Engine.simulate(back)) === hashOf(full), 'the example survives save and load with an identical movement log');

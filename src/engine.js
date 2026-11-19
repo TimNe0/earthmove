@@ -306,7 +306,16 @@
   // ---------- simulation ----------
   // opts: { plan (default: the scenario's active plan), P (prepared arrays, reused by the optimiser),
   //         noLog (fast path: summary only), horizonDays }
+  // Two implementations of the same dispatcher. simulateCore is the original, unchanged code: it runs every job that uses none of the
+  // material modules (A1-A5), exactly as before Phase 4 and at its original speed. simulateFull is the material-aware version (soil lines and
+  // classes, import and export gates, stockpiles). With the material modules at neutral settings the two must agree exactly: tests/diff.js checks it.
   function simulate(scn, opts) {
+    opts = opts || {};
+    const P = opts.P || prepare(scn);
+    return (P.cfg.mat ? simulateFull : simulateCore)(scn, opts.P ? opts : Object.assign({}, opts, { P }));
+  }
+
+  function simulateFull(scn, opts) {
     opts = opts || {};
     const P = opts.P || prepare(scn), n = P.n, nn = P.nn, cfg = P.cfg; // node-indexed arrays use nn; section loops stop at n
     const plan = opts.plan !== undefined ? opts.plan : activePlan(scn);
@@ -319,7 +328,7 @@
       else if (P.qty[i] < 0) { freeNeed[i] = -P.qty[i]; totalFill += -P.qty[i]; }
     }
     for (const x of P.srcs) if (x >= n) remSrc[x] = P.qty[x]; // import budgets (A4): not part of the job's own cut
-    const hasImp = P.srcs.some(x => x >= n);
+    const hasImp = P.srcs.some(x => x >= n), nodeMode = nn > n; // nodeMode: off-site gates or stockpiles exist (plain jobs never look at node kinds)
     const idx = {}; P.ids.forEach((id, i) => (idx[id] = i));
     const rank = new Float64Array(nn); for (let i = 0; i < nn; i++) rank[i] = i;
     const arcsBySrc = {};
@@ -471,16 +480,33 @@
       if (arcs) {
         let live = 0;
         for (const a of arcs) {
-          if (a.rem < EPS || !canTake(a.to, mat)) continue;
+          if (a.rem < EPS || (M ? !canTake(a.to, mat) : freeNeed[a.to] <= 0)) continue;
           live++;
           if (consider(a.to, tripL(P, ty, i, a.to)) >= 0) return { j: a.to, arc: a };
         }
         return live > 0 ? { wait: minWait, queue: qWait } : null; // planned destinations unavailable for now, or plan finished for this source
       }
-      const order = orderFor(i, mat), pkey = M && M.a2 ? i + '|' + mat : i;
-      let p = (M && M.a2 ? ptrCache[pkey] : ptr[i]) || 0;
+      if (!M) { // plain job: the original inline loop (kept apart so the material helpers cost it nothing)
+        const order = P.destOrder[i];
+        let p = ptr[i];
+        while (p < order.length && freeNeed[order[p]] <= 0) p++;
+        ptr[i] = p;
+        let bestJ = -1, bestTip = Infinity;
+        for (let k = p; k < order.length; k++) {
+          const j = order[k];
+          if (freeNeed[j] <= 0) continue;
+          const te = consider(j, tripL(P, ty, i, j));
+          if (te < 0) continue;
+          if (!recv) return { j, arc: null }; // nearest open destination
+          if (te < bestTip) { bestTip = te; bestJ = j; } // with receiving rates: where it will finish tipping soonest (nearest wins ties)
+        }
+        if (bestJ >= 0) return { j: bestJ, arc: null };
+        return minWait === Infinity ? null : { wait: minWait, queue: qWait };
+      }
+      const order = orderFor(i, mat), pkey = M.a2 ? i + '|' + mat : i;
+      let p = (M.a2 ? ptrCache[pkey] : ptr[i]) || 0;
       while (p < order.length && !canTake(order[p], mat)) p++;
-      if (M && M.a2) ptrCache[pkey] = p; else ptr[i] = p;
+      if (M.a2) ptrCache[pkey] = p; else ptr[i] = p;
       let bestJ = -1, bestTip = Infinity;
       for (let k = p; k < order.length; k++) {
         const j = order[k];
@@ -494,6 +520,22 @@
       return minWait === Infinity ? null : { wait: minWait, queue: qWait };
     }
 
+    // The next source to load: the one whose earliest free loading slot is soonest (ties by rank). A small function of its own,
+    // so the engine compiles this hot loop separately instead of inside the very large simulate().
+    let selBest = -1, selT = 0, selSlot = 0, selSlotT = 0;
+    function selectSource(active, base) {
+      let best = -1, bestT = Infinity, bestSlot = 0, bestSlotT = 0;
+      for (const i of active) {
+        if (blocked[i] || remSrc[i] <= 0) continue;
+        const sl = slots[i]; let mi = 0;
+        for (let k = 1; k < sl.length; k++) if (sl[k] < sl[mi]) mi = k;
+        let mt = sl[mi];
+        if (fleetOn) { const r = rdyT[i] - base; if (r > mt) mt = r; } // no lorry back yet (cached bound, checked below)
+        if (mt >= P.we[i]) { blocked[i] = 1; continue; }
+        if (mt < bestT || (mt === bestT && rank[i] < rank[best])) { bestT = mt; best = i; bestSlot = mi; bestSlotT = sl[mi]; }
+      }
+      selBest = best; selT = bestT; selSlot = bestSlot; selSlotT = bestSlotT;
+    }
     for (d = 0; d < horizon; d++) {
       if (totalRem <= EPS && !(hasImp && P.srcs.some(x => x >= n && remSrc[x] > EPS) && P.dsts.some(j => freeNeed[j] > EPS))) break;
       if (d > maxOpen + 14 && d - lastMove > 14) { stuck = true; break; }
@@ -534,20 +576,13 @@
       if (!active.length) continue;
       let used = 0;
       while (used < P.cap) {
-        let best = -1, bestT = Infinity, bestSlot = 0, bestSlotT = 0;
-        for (const i of active) {
-          if (blocked[i] || remSrc[i] <= 0) continue;
-          const sl = slots[i]; let mi = 0;
-          for (let k = 1; k < sl.length; k++) if (sl[k] < sl[mi]) mi = k;
-          let mt = sl[mi];
-          if (fleetOn) { const r = rdyT[i] - base; if (r > mt) mt = r; } // no lorry back yet (cached bound, checked below)
-          if (mt >= P.we[i]) { blocked[i] = 1; continue; }
-          if (mt < bestT || (mt === bestT && rank[i] < rank[best])) { bestT = mt; best = i; bestSlot = mi; bestSlotT = sl[mi]; }
-        }
+        selectSource(active, base);
+        const best = selBest, bestT = selT, bestSlot = selSlot, bestSlotT = selSlotT;
         if (best < 0) break;
         if (fleetOn && rdyStale[best]) { freshen(best); continue; } // the winner's bound was stale: get its exact value and choose again
         const lorry = fleetOn ? rdyK[best] : -1;
         const ty = fleetOn ? types[lType[lorry]] : tCore;
+        const kBest = nodeMode ? P.kind[best] : 0; // 0 section, 1 import, 3 stockpile
         let capT = ty.payload, lineIdx = -1, mat = null;
         if (M) { // one material per load: the first cut line with soil left, limited by the lorry body (A1: loose volume / bulking)
           const sl = srcLeft[best]; let c = curLine[best];
@@ -556,16 +591,16 @@
           if (c >= sl.length) { remSrc[best] = 0; continue; }
           lineIdx = c; capT = Math.min(capT, sl[c]); mat = M.srcLines[best][c].m;
           if (M.a1) capT = Math.min(capT, ty.body * M.rho[mat] / M.bulk[mat]);
-          if (P.kind[best] === 1) { const av = nodeAvail(best, d); if (av <= EPS) { blocked[best] = 1; continue; } capT = Math.min(capT, av); } // import: daily limit
+          if (kBest === 1) { const av = nodeAvail(best, d); if (av <= EPS) { blocked[best] = 1; continue; } capT = Math.min(capT, av); } // import: daily limit
         }
-        const svc = P.kind[best] === 1 ? Math.max(1, Math.round(+P.node[best].roundTripMin || 0)) : svcMin(best, bestSlot, Math.min(capT, remSrc[best]));
+        const svc = kBest === 1 ? Math.max(1, Math.round(+P.node[best].roundTripMin || 0)) : svcMin(best, bestSlot, Math.min(capT, remSrc[best]));
         const departT = bestT + svc;
         let pk = pick(best, departT, d, ty, svc, capT, mat);
-        if (!pk && M && M.a4 && P.kind[best] !== 1 && !anyNeed(mat)) { // nothing needs this material (on site or banked in a stockpile): ship it off site if an export takes it (A4)
+        if (!pk && M && M.a4 && kBest !== 1 && !anyNeed(mat)) { // nothing needs this material (on site or banked in a stockpile): ship it off site if an export takes it (A4)
           const e = pickExport(best, mat, d);
           if (e.x >= 0) pk = { j: e.x, arc: null };
         }
-        if (M && M.a5 && P.kind[best] === 0 && (!pk || (pk.wait !== undefined && !pk.queue && !(pk.wait < P.we[best] && pk.wait > bestT)))) {
+        if (M && M.a5 && kBest === 0 && (!pk || (pk.wait !== undefined && !pk.queue && !(pk.wait < P.we[best] && pk.wait > bestT)))) {
           // nowhere on site can take it and it cannot wait for a fill to open today: park it in the nearest stockpile with room (A5)
           const x = pickStock(best);
           if (x >= 0) pk = { j: x, arc: null, parked: !anyNeed(mat) };
@@ -579,13 +614,13 @@
           } else blocked[best] = 1;
           continue;
         }
-        const j = pk.j;
-        let tonnes = j >= n ? Math.min(capT, remSrc[best], P.kind[j] === 2 ? nodeAvail(j, d) : stockSpace(j)) : Math.min(capT, remSrc[best], M ? takeCap(j, mat) : freeNeed[j]);
+        const j = pk.j, kJ = j >= n ? P.kind[j] : 0; // kJ: 2 export, 3 stockpile
+        let tonnes = j >= n ? Math.min(capT, remSrc[best], kJ === 2 ? nodeAvail(j, d) : stockSpace(j)) : Math.min(capT, remSrc[best], M ? takeCap(j, mat) : freeNeed[j]);
         let dLine = -1, consume = 0;
         if (pk.arc) tonnes = Math.min(tonnes, pk.arc.rem);
         const arrAbs = base + departT + tripL(P, ty, best, j);
         let tipAbs = arrAbs;
-        if (j >= n && P.kind[j] === 2) tipAbs = arrAbs + Math.max(0, Math.round(+P.node[j].roundTripMin || 0)); // export: the lorry is back at the gate after its off-site round trip
+        if (kJ === 2) tipAbs = arrAbs + Math.max(0, Math.round(+P.node[j].roundTripMin || 0)); // export: the lorry is back at the gate after its off-site round trip
         else if (recv && j < n) { // queue for a tipping bay, then tip at the section's receiving rate
           const bf = bayFree[j] || (bayFree[j] = new Float64Array(recv.bays[j]));
           let bi = 0; for (let k = 1; k < bf.length; k++) if (bf[k] < bf[bi]) bi = k;
@@ -594,17 +629,19 @@
           tipAbs = ts + dur; bf[bi] = tipAbs; tipWaitMin += ts - arrAbs; if (ts - arrAbs > tipWaitMax) tipWaitMax = ts - arrAbs;
         }
         consume = tonnes;
-        if (P.kind[best] === 1) { nodeUsed[best] += tonnes; nodeTot[best] += tonnes; }
-        if (j >= n) { consume = 0; if (P.kind[j] === 2) { nodeUsed[j] += tonnes; nodeTot[j] += tonnes; } }
+        if (nodeMode) {
+          if (kBest === 1) { nodeUsed[best] += tonnes; nodeTot[best] += tonnes; }
+          if (j >= n) { consume = 0; if (kJ === 2) { nodeUsed[j] += tonnes; nodeTot[j] += tonnes; } }
+        }
         if (j < n) placedT += tonnes;
-        if (P.kind[j] === 3) { stockTot[j] += tonnes; if (pk.parked) { parked[j] += tonnes; parkedT += tonnes; } else { stock[j][matIdx[mat]] += tonnes; stockIn[j] += tonnes; } }
-        if (P.kind[best] === 3) { stock[best][lineIdx] -= tonnes; if (stock[best][lineIdx] < 1e-9) stock[best][lineIdx] = 0; stockTot[best] -= tonnes; if (stockTot[best] < 1e-9) stockTot[best] = 0; stockOut[best] += tonnes; handleCost += tonnes * (+P.node[best].handleCostPerT || 0); }
+        if (kJ === 3) { stockTot[j] += tonnes; if (pk.parked) { parked[j] += tonnes; parkedT += tonnes; } else { stock[j][matIdx[mat]] += tonnes; stockIn[j] += tonnes; } }
+        if (kBest === 3) { stock[best][lineIdx] -= tonnes; if (stock[best][lineIdx] < 1e-9) stock[best][lineIdx] = 0; stockTot[best] -= tonnes; if (stockTot[best] < 1e-9) stockTot[best] = 0; stockOut[best] += tonnes; handleCost += tonnes * (+P.node[best].handleCostPerT || 0); }
         if (M && M.a2 && j < n) { // place it in its fill line; a different class takes up space in proportion to its compacted volume
           dLine = lineFor(j, mat); const req = M.dstLines[j][dLine].req;
           if (req !== mat) consume = tonnes * M.occ[mat] / M.occ[req];
           needLine[j][dLine] -= consume; if (needLine[j][dLine] < EPS) needLine[j][dLine] = 0;
         }
-        remSrc[best] -= tonnes; if (j < n) freeNeed[j] -= consume; if (P.kind[best] !== 1 && !(P.kind[j] === 3 && !pk.parked)) totalRem -= tonnes; // deposits into a stockpile stay to be hauled out; parked soil counts as dealt with
+        remSrc[best] -= tonnes; if (j < n) freeNeed[j] -= consume; if (kBest !== 1 && !(kJ === 3 && !pk.parked)) totalRem -= tonnes; // deposits into a stockpile stay to be hauled out; parked soil counts as dealt with
         if (M) { const sl = srcLeft[best]; sl[lineIdx] -= tonnes; if (sl[lineIdx] < EPS) sl[lineIdx] = 0; if (!noLog) { ML.mat.push(mat); ML.sline.push(lineIdx); ML.dline.push(dLine); } }
         if (pk.arc) pk.arc.rem -= tonnes;
         if (remSrc[best] < EPS) { if (best < n) totalRem -= remSrc[best]; remSrc[best] = 0; }
@@ -686,6 +723,273 @@
     return { P, log: L, n: moves, daily, sections, summary, msum, mlog: ML };
   }
 
+  // ---- the original dispatcher, for jobs with no material module (see simulate above and tests/diff.js) ----
+  function simulateCore(scn, opts) {
+    opts = opts || {};
+    const P = opts.P || prepare(scn), n = P.n, cfg = P.cfg;
+    const plan = opts.plan !== undefined ? opts.plan : activePlan(scn);
+    const noLog = !!opts.noLog;
+    const horizon = opts.horizonDays || 3650;
+    const remSrc = new Float64Array(n), freeNeed = new Float64Array(n);
+    let totalRem = 0, totalCut = 0, totalFill = 0;
+    for (let i = 0; i < n; i++) {
+      if (P.qty[i] > 0) { remSrc[i] = P.qty[i]; totalRem += P.qty[i]; totalCut += P.qty[i]; }
+      else if (P.qty[i] < 0) { freeNeed[i] = -P.qty[i]; totalFill += -P.qty[i]; }
+    }
+    const idx = {}; P.ids.forEach((id, i) => (idx[id] = i));
+    const rank = new Float64Array(n); for (let i = 0; i < n; i++) rank[i] = i;
+    const arcsBySrc = {};
+    if (plan) {
+      if (plan.rank) for (const id in plan.rank) if (idx[id] !== undefined) rank[idx[id]] = plan.rank[id];
+      for (const a of plan.arcs || []) {
+        const f = idx[a.from], t = idx[a.to];
+        if (f === undefined || t === undefined || !(P.qty[f] > 0) || !(P.qty[t] < 0)) continue;
+        (arcsBySrc[f] = arcsBySrc[f] || []).push({ to: t, rem: +a.tonnes });
+      }
+    }
+    const ptr = new Int32Array(n); // first possibly-not-full destination per source (greedy)
+    const L = { src: [], dst: [], t: [], start: [], depart: [], tip: [], bs: [], lorry: [] };
+    const lastDepart = new Float64Array(n).fill(-1), lastTip = new Float64Array(n).fill(-1);
+    const daily = [];
+    let moves = 0, tonnesMoved = 0, tonneKm = 0, endTime = 0, fleetDelayMin = 0, tipWaitMin = 0, tipWaitMax = 0;
+    let maxOpen = 0;
+    for (const j of P.dsts) if (P.openDay[j] > maxOpen) maxOpen = P.openDay[j];
+    let lastMove = 0, stuck = false, firstDay = -1, lastDay = -1, d = 0;
+    const slots = []; for (let i = 0; i < n; i++) slots.push(new Int32Array(P.loaders[i]));
+    const rates = new Array(n).fill(null); // per-slot excavator rate (B5 individual machines)
+    const blocked = new Uint8Array(n);
+    const types = cfg.types, tCore = types[0];
+
+    // ---- B1/B2: the lorry pool. Each lorry has a free time and a position (the section it last tipped in).
+    const fleetOn = cfg.useFleet;
+    let lFree = null, lLoc = null, lType = null, nL = 0;
+    // Cached best lorry per source. A lorry's readiness for any source never improves once it has been used, so after every
+    // dispatch the cached values are only lower bounds (marked stale) and a source is recomputed exactly only when it is about to win.
+    const rdyT = new Float64Array(n), rdyK = new Int32Array(n).fill(-1), rdyStale = new Uint8Array(n).fill(1);
+    if (fleetOn) {
+      nL = cfg.fleetSize; lFree = new Float64Array(nL); lLoc = new Int32Array(nL).fill(cfg.depot ? DEPOT : -1); lType = new Int32Array(nL);
+      let k = 0; types.forEach((t, ti) => { for (let q = 0; q < Math.min(t.qty, 20000); q++) lType[k++] = ti; });
+    }
+    // Earliest a lorry can be at source i, ready to load (it drives empty from where it last tipped). Exact recomputation.
+    function freshen(i) {
+      let bk = -1, bt = Infinity, bp = -1;
+      for (let k = 0; k < nL; k++) {
+        const t = types[lType[k]];
+        const r = lFree[k] + (lLoc[k] === -1 ? 0 : lLoc[k] === DEPOT ? tripX(P, t, cfg.depot.x, i) : tripE(P, t, lLoc[k], i));
+        if (r < bt || (r === bt && t.payload > bp)) { bt = r; bk = k; bp = t.payload; }
+      }
+      rdyK[i] = bk; rdyT[i] = bt; rdyStale[i] = 0;
+    }
+
+    // ---- B4: tipping bays per fill section (absolute minutes)
+    const recv = cfg.recv, bayFree = [];
+    // ---- B5/B6: loading time
+    const exc = cfg.exc, uExc = cfg.uExc;
+    const svcMin = (i, k, tonnes) => {
+      let m;
+      if (exc) { const r = rates[i] ? rates[i][k] : exc.rate; m = Math.max(1, Math.round(tonnes * 60 / r)); } else m = P.loadMin;
+      return uExc === 1 ? m : Math.max(1, Math.round(m / uExc));
+    };
+    const machineLast = exc && exc.mode === 'byMachine' ? new Int32Array(exc.machines.length).fill(-1) : null;
+
+    // With B4: when would a load of tn tonnes arriving at fill j at arrAbs finish tipping, and how long would it queue?
+    function tipAt(j, arrAbs, tn) {
+      const bf = bayFree[j]; let mf = 0;
+      if (bf) { mf = Infinity; for (let q = 0; q < bf.length; q++) if (bf[q] < mf) mf = bf[q]; }
+      const dur = Math.max(1, Math.round(tn * 60 / (recv.rate[j] / recv.bays[j]) / cfg.uRecv));
+      const ts = Math.max(arrAbs, mf);
+      return { ts, te: ts + dur, mf };
+    }
+    // Choose a destination for a load leaving source i at departT on day `day` with a lorry of type ty.
+    // Returns {j, arc}, or {wait: s} when no destination can take it yet (s = earliest loading start that would work:
+    // a fill not open on arrival, or, with B4, a tipping queue longer than the allowed limit), or null.
+    function pick(i, departT, day, ty, svc) {
+      const arcs = arcsBySrc[i];
+      let minWait = Infinity;
+      // can this load go to fill j now? returns tip end time, or sets minWait and returns -1
+      const consider = (j, tr) => {
+        if (P.openDay[j] > day + Math.floor((departT + tr) / DAY)) {
+          const w = (P.openDay[j] - day) * DAY - tr - svc;
+          if (w < minWait) minWait = w;
+          return -1;
+        }
+        if (!recv) return 0;
+        const arr = day * DAY + departT + tr, ti = tipAt(j, arr, Math.min(ty.payload, remSrc[i], freeNeed[j]));
+        if (ti.ts - arr > recv.maxQ) { // queue too long: hold loading until it would be short enough
+          const w = ti.mf - recv.maxQ - tr - svc - day * DAY;
+          if (w < minWait) minWait = w;
+          return -1;
+        }
+        return ti.te;
+      };
+      if (arcs) {
+        let live = 0;
+        for (const a of arcs) {
+          if (a.rem < EPS || freeNeed[a.to] <= 0) continue;
+          live++;
+          if (consider(a.to, tripL(P, ty, i, a.to)) >= 0) return { j: a.to, arc: a };
+        }
+        return live > 0 ? { wait: minWait } : null; // planned destinations unavailable for now, or plan finished for this source
+      }
+      const order = P.destOrder[i];
+      let p = ptr[i];
+      while (p < order.length && freeNeed[order[p]] <= 0) p++;
+      ptr[i] = p;
+      let bestJ = -1, bestTip = Infinity;
+      for (let k = p; k < order.length; k++) {
+        const j = order[k];
+        if (freeNeed[j] <= 0) continue;
+        const te = consider(j, tripL(P, ty, i, j));
+        if (te < 0) continue;
+        if (!recv) return { j, arc: null }; // nearest open destination
+        if (te < bestTip) { bestTip = te; bestJ = j; } // with receiving rates: where it will finish tipping soonest (nearest wins ties)
+      }
+      if (bestJ >= 0) return { j: bestJ, arc: null };
+      return minWait === Infinity ? null : { wait: minWait };
+    }
+
+    for (d = 0; d < horizon; d++) {
+      if (totalRem <= EPS) break;
+      if (d > maxOpen + 14 && d - lastMove > 14) { stuck = true; break; }
+      const dow = dowOf(P.startDay + d);
+      const base = d * DAY;
+      if (fleetOn && cfg.depot) { // overnight every lorry is back at the depot, and leaves it at the set time
+        const lv = base + cfg.depot.leave;
+        for (let k = 0; k < nL; k++) {
+          if (lLoc[k] !== DEPOT) { lFree[k] += tripX(P, types[lType[k]], cfg.depot.x, lLoc[k]); lLoc[k] = DEPOT; }
+          if (lFree[k] < lv) lFree[k] = lv;
+        }
+        rdyStale.fill(1);
+      }
+      const active = [];
+      if (exc && exc.mode === 'byMachine') {
+        // individual excavators: today's loading slots are the machines assigned to each section today
+        const per = {};
+        exc.machines.forEach((m, k) => {
+          for (const a of m.asg) if (d >= a.from && d <= a.to) { (per[a.i] = per[a.i] || []).push(k); break; }
+        });
+        for (const i of P.srcs) {
+          rates[i] = null;
+          if (!(remSrc[i] > 0 && P.workDays[i][dow]) || !per[i]) continue;
+          const ks = per[i], sl = new Int32Array(ks.length), rt = new Float64Array(ks.length);
+          ks.forEach((k, q) => {
+            rt[q] = exc.machines[k].rate;
+            sl[q] = P.ws[i] + (machineLast[k] >= 0 && machineLast[k] !== i ? exc.reloc : 0); // lost time when a machine relocates
+            machineLast[k] = i;
+          });
+          slots[i] = sl; rates[i] = rt; active.push(i); blocked[i] = 0;
+        }
+      } else {
+        for (const i of P.srcs) if (remSrc[i] > 0 && P.workDays[i][dow]) active.push(i);
+        for (const i of active) { slots[i].fill(P.ws[i]); blocked[i] = 0; }
+      }
+      if (!active.length) continue;
+      let used = 0;
+      while (used < P.cap) {
+        let best = -1, bestT = Infinity, bestSlot = 0, bestSlotT = 0;
+        for (const i of active) {
+          if (blocked[i] || remSrc[i] <= 0) continue;
+          const sl = slots[i]; let mi = 0;
+          for (let k = 1; k < sl.length; k++) if (sl[k] < sl[mi]) mi = k;
+          let mt = sl[mi];
+          if (fleetOn) { const r = rdyT[i] - base; if (r > mt) mt = r; } // no lorry back yet (cached bound, checked below)
+          if (mt >= P.we[i]) { blocked[i] = 1; continue; }
+          if (mt < bestT || (mt === bestT && rank[i] < rank[best])) { bestT = mt; best = i; bestSlot = mi; bestSlotT = sl[mi]; }
+        }
+        if (best < 0) break;
+        if (fleetOn && rdyStale[best]) { freshen(best); continue; } // the winner's bound was stale: get its exact value and choose again
+        const lorry = fleetOn ? rdyK[best] : -1;
+        const ty = fleetOn ? types[lType[lorry]] : tCore;
+        const svc = svcMin(best, bestSlot, Math.min(ty.payload, remSrc[best]));
+        const departT = bestT + svc;
+        const pk = pick(best, departT, d, ty, svc);
+        if (!pk || pk.wait !== undefined) {
+          // Nowhere to tip yet. If a destination opens at midnight and a long trip can still reach it
+          // after loading later today, hold this source until then; otherwise it is done for today.
+          if (pk && pk.wait < P.we[best] && pk.wait > bestT) {
+            const sl = slots[best];
+            for (let k = 0; k < sl.length; k++) if (sl[k] < pk.wait) sl[k] = pk.wait;
+          } else blocked[best] = 1;
+          continue;
+        }
+        const j = pk.j;
+        let tonnes = Math.min(ty.payload, remSrc[best], freeNeed[j]);
+        if (pk.arc) tonnes = Math.min(tonnes, pk.arc.rem);
+        const arrAbs = base + departT + tripL(P, ty, best, j);
+        let tipAbs = arrAbs;
+        if (recv) { // queue for a tipping bay, then tip at the section's receiving rate
+          const bf = bayFree[j] || (bayFree[j] = new Float64Array(recv.bays[j]));
+          let bi = 0; for (let k = 1; k < bf.length; k++) if (bf[k] < bf[bi]) bi = k;
+          const ts = Math.max(arrAbs, bf[bi]);
+          const dur = Math.max(1, Math.round(tonnes * 60 / (recv.rate[j] / recv.bays[j]) / cfg.uRecv));
+          tipAbs = ts + dur; bf[bi] = tipAbs; tipWaitMin += ts - arrAbs; if (ts - arrAbs > tipWaitMax) tipWaitMax = ts - arrAbs;
+        }
+        remSrc[best] -= tonnes; freeNeed[j] -= tonnes; totalRem -= tonnes;
+        if (pk.arc) pk.arc.rem -= tonnes;
+        if (remSrc[best] < EPS) { totalRem -= remSrc[best]; remSrc[best] = 0; }
+        if (freeNeed[j] < EPS) freeNeed[j] = 0;
+        slots[best][bestSlot] = departT;
+        let bs = base + bestT;
+        if (fleetOn) {
+          if (rdyT[best] - base > bestSlotT) fleetDelayMin += rdyT[best] - base - bestSlotT;
+          const prevFree = lFree[lorry], approach = lLoc[lorry] === -1 ? 0 : lLoc[lorry] === DEPOT ? tripX(P, ty, cfg.depot.x, best) : tripE(P, ty, lLoc[lorry], best);
+          bs = lLoc[lorry] === -1 ? base + bestT : Math.max(prevFree, base + bestT - approach);
+          lFree[lorry] = tipAbs; lLoc[lorry] = j;
+          rdyStale.fill(1);
+        }
+        if (!noLog) { L.src.push(best); L.dst.push(j); L.t.push(tonnes); L.start.push(base + bestT); L.depart.push(base + departT); L.tip.push(tipAbs); if (fleetOn) { L.bs.push(bs); L.lorry.push(lorry); } }
+        if (base + departT > lastDepart[best]) lastDepart[best] = base + departT;
+        if (tipAbs > lastTip[j]) lastTip[j] = tipAbs;
+        if (tipAbs > endTime) endTime = tipAbs;
+        moves++; tonnesMoved += tonnes; tonneKm += tonnes * dist(P, best, j) / 1000;
+        used++; lastMove = d;
+        if (firstDay < 0) firstDay = d;
+        lastDay = d;
+        daily[d] = used;
+      }
+    }
+    for (let k = 0; k <= lastDay; k++) if (daily[k] === undefined) daily[k] = 0;
+
+    // ----- summary -----
+    const unplacedSurplus = P.srcs.reduce((s, i) => s + remSrc[i], 0);
+    const unfilled = P.dsts.reduce((s, j) => s + freeNeed[j], 0);
+    const complete = unplacedSurplus <= EPS && unfilled <= EPS && (totalCut > 0 || totalFill > 0);
+    let span = 0, idle = 0;
+    if (firstDay >= 0) {
+      for (let k = firstDay; k <= lastDay; k++) {
+        const dow = dowOf(P.startDay + k);
+        let any = false;
+        for (const i of P.srcs) if (P.workDays[i][dow]) { any = true; break; }
+        if (any) { span++; if (!daily[k]) idle++; }
+      }
+    }
+    const summary = {
+      moves, tonnesMoved, tonneKm, endTime, firstDay, lastDay, workingSpan: span, idleDays: idle,
+      utilisation: span > 0 ? moves / (P.cap * span) : 0,
+      totalCut, totalFill, imbalance: totalCut - totalFill, unplacedSurplus, unfilled, complete, stuck,
+      fleetSize: fleetOn ? cfg.fleetSize : null, fleetDelayMin, tipWaitMin, tipWaitMax
+    };
+    if (noLog) return { P, log: null, n: moves, daily, sections: null, summary };
+
+    const sections = [];
+    for (let i = 0; i < n; i++) {
+      const isCut = P.qty[i] > 0, isFill = P.qty[i] < 0;
+      let level = null, remaining = 0;
+      if (isCut) { remaining = remSrc[i]; if (remaining <= EPS) level = lastDepart[i]; }
+      else if (isFill) { remaining = freeNeed[i]; if (remaining <= EPS) level = lastTip[i]; }
+      sections.push({ id: P.ids[i], name: P.names[i], qty: P.qty[i], type: isCut ? 'cut' : isFill ? 'fill' : 'none', levelTime: level, remaining, to: {}, from: {} });
+    }
+    for (let k = 0; k < moves; k++) {
+      const a = L.src[k], b = L.dst[k];
+      sections[a].to[b] = (sections[a].to[b] || 0) + L.t[k];
+      sections[b].from[a] = (sections[b].from[a] || 0) + L.t[k];
+    }
+    const reached = sections.filter(s => s.type !== 'none' && s.levelTime !== null);
+    summary.completion = reached.length ? reached.reduce((mx, s) => Math.max(mx, s.levelTime), 0) : null;
+    summary.completionDay = summary.completion === null ? null : Math.floor(summary.completion / DAY);
+    return { P, log: L, n: moves, daily, sections, summary };
+  }
+
   // ---------- time-chainage chart data (E8) ----------
   // Reads only the movement log and the section results, so the chart can never disagree with the road view or the results table.
   // A section's earthworks start at its first load (cut) or first tip (fill) and finish when it reaches level.
@@ -693,7 +997,7 @@
     const L = res.log, P = res.P, n = P.n, nn = P.nn, nd = Math.floor(res.summary.endTime / DAY) + 2;
     const first = new Float64Array(nn).fill(Infinity), last = new Float64Array(nn).fill(-1);
     const daily = []; for (let i = 0; i < nn; i++) daily.push(new Float32Array(nd + 1));
-    const pairs = new Map();
+    const pairs = new Map(), ML = res.mlog, mids = ML ? res.P.cfg.mat.ids : null, K = mids ? mids.length : 1; // with materials, one band per source, destination and material
     for (let k = 0; k < res.n; k++) {
       const s = L.src[k], d = L.dst[k], t = L.t[k];
       if (L.start[k] < first[s]) first[s] = L.start[k];
@@ -701,8 +1005,8 @@
       if (L.tip[k] < first[d]) first[d] = L.tip[k];
       if (L.tip[k] > last[d]) last[d] = L.tip[k];
       daily[s][Math.floor(L.start[k] / DAY)] += t; daily[d][Math.floor(L.tip[k] / DAY)] += t;
-      const key = s * nn + d; let pr = pairs.get(key);
-      if (!pr) pairs.set(key, (pr = { src: s, dst: d, t0: L.start[k], t1: L.tip[k], tonnes: 0, count: 0 }));
+      const key = (s * nn + d) * K + (ML ? mids.indexOf(ML.mat[k]) : 0); let pr = pairs.get(key);
+      if (!pr) { pairs.set(key, (pr = { src: s, dst: d, t0: L.start[k], t1: L.tip[k], tonnes: 0, count: 0 })); if (ML) pr.mat = ML.mat[k]; }
       if (L.start[k] < pr.t0) pr.t0 = L.start[k]; if (L.tip[k] > pr.t1) pr.t1 = L.tip[k];
       pr.tonnes += t; pr.count++;
     }

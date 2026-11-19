@@ -4,8 +4,11 @@
   const E = Engine, M = Model, MOD = Modules;
   const $ = id => document.getElementById(id);
   const STORE = 'earthmove.scenario.v1';
-  MOD.setBuilt(['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'D5', 'E8']); // modules built so far
+  MOD.setBuilt(['A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'D5', 'E8']); // modules built so far
   const modOn = id => !!(MOD.byId[id] && MOD.byId[id].built && scn.setup.modules[id]);
+  const anyA = () => ['A1', 'A2', 'A3', 'A4', 'A5'].some(modOn); // any materials module on
+  const matName = id => { const m = (scn.materials || []).find(x => x.id === id); return m ? (m.name || m.id) : id; };
+  const matCol = id => { const m = (scn.materials || []).find(x => x.id === id); return m ? m.colour : null; };
 
   function h(tag, attrs) {
     const e = document.createElement(tag);
@@ -259,6 +262,13 @@
     ctx.strokeStyle = COL.ink; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); ctx.beginPath(); ctx.moveTo(0, base); ctx.lineTo(W, base); ctx.stroke(); ctx.setLineDash([]);
     ctx.fillStyle = COL.ink; ctx.font = 'italic 11px system-ui'; ctx.fillText('finished level', 4, base - 3);
     cv._hits = hits;
+    P.nodeIdx.forEach((x, k) => { // off-site gates (A4) and stockpiles (A5) sit on the road at their chainage
+      const px = X(P.chain[x]); if (px < -30 || px > W + 30) return;
+      const kind = P.kind[x], col = kind === 1 ? COL.accent : kind === 2 ? COL.err : COL.accent2, y0 = 26 + (k % 3) * 13;
+      ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 1.5; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(px, y0); ctx.lineTo(px, base); ctx.stroke(); ctx.setLineDash([]);
+      ctx.beginPath(); if (kind === 3) { ctx.moveTo(px, base - 12); ctx.lineTo(px - 7, base); ctx.lineTo(px + 7, base); } else if (kind === 1) { ctx.moveTo(px - 6, y0 - 5); ctx.lineTo(px + 6, y0 - 5); ctx.lineTo(px, y0 + 4); } else { ctx.moveTo(px - 6, y0 + 4); ctx.lineTo(px + 6, y0 + 4); ctx.lineTo(px, y0 - 5); } ctx.closePath(); ctx.fill();
+      ctx.font = '10px system-ui'; ctx.fillText((kind === 1 ? 'Import: ' : kind === 2 ? 'Export: ' : 'Stockpile: ') + P.names[x], px + 8, y0 + 3);
+    });
     // soil in transit
     const L = res.log, hi = E.upperBound(L.depart, S.t), lo = E.upperBound(L.depart, S.t - maxTrip - 1);
     const mps = speedMps(), bandMode = S.playing && mps > 720;
@@ -359,7 +369,7 @@
   })();
 
   // ---------- tabs ----------
-  const tabsList = () => [['sections', 'Sections']].concat(['B1', 'B2', 'B3', 'B4', 'B5', 'B6'].some(modOn) ? [['fleet', 'Fleet & plant']] : [], [['results', 'Results'], ['log', 'Movement log']]).concat(MOD.activeIds(scn).indexOf('D5') >= 0 ? [['scenarios', 'Scenarios']] : [], [['messages', 'Messages']]);
+  const tabsList = () => [['sections', 'Sections']].concat(['B1', 'B2', 'B3', 'B4', 'B5', 'B6'].some(modOn) ? [['fleet', 'Fleet & plant']] : [], anyA() ? [['materials', 'Materials & sites']] : [], [['results', 'Results'], ['log', 'Movement log']]).concat(MOD.activeIds(scn).indexOf('D5') >= 0 ? [['scenarios', 'Scenarios']] : [], [['messages', 'Messages']]);
   function renderTabs(rebuildTable) {
     const tabs = $('tabs'); tabs.replaceChildren();
     const nMsg = allMessages().filter(m => m.level !== 'info').length;
@@ -368,6 +378,7 @@
     const body = $('tabbody');
     if (S.tab === 'sections') { if (rebuildTable || !body.firstChild || !body.querySelector('#sectable')) renderSections(); else updateChainage(); }
     else if (S.tab === 'fleet') { if (rebuildTable || !body.querySelector('#fleetpane')) renderFleet(); }
+    else if (S.tab === 'materials') { if (rebuildTable || !body.querySelector('#matpane')) renderMaterials(); }
     else if (S.tab === 'results') renderResults();
     else if (S.tab === 'log') renderLog();
     else if (S.tab === 'scenarios') renderScenarios();
@@ -393,7 +404,7 @@
     }
     body.append(h('h3', {}, 'Global settings'), st);
     const b3v = modOn('B3') && scn.modules.B3.mode === 'bySection', b4v = modOn('B4') && scn.modules.B4.mode === 'bySection', b5m = modOn('B5') && scn.modules.B5.mode === 'byMachine';
-    const heads = [['#'], ['Name'], ['Length (m)', 1], ['Soil (' + UL() + '): + surplus, − needs fill', 1], ['Loads start from'], ['to'], ['Earliest tipping date']];
+    const heads = [['#'], ['Name'], ['Length (m)', 1], [anyA() ? 'Soil (' + UL() + '): + cut, − fill, one line per soil type, dug top to bottom' : 'Soil (' + UL() + '): + surplus, − needs fill', 1], ['Loads start from'], ['to'], ['Earliest tipping date']];
     if (!b5m) heads.push(['Max loaders']);
     if (b3v) heads.push(['Speed limit (kph)', 1], ['Gradient factor, loaded', 1], ['Gradient factor, empty', 1]);
     if (b4v) heads.push(['Receiving rate (' + UL() + '/h)', 1], ['Tipping bays', 1]);
@@ -412,13 +423,23 @@
         inp.addEventListener('input', () => { mo(id, {})()[key] = num(inp.value); changed(false); });
         return cell(f, inp);
       };
+      const linesCell = () => { // A1-A5: a section holds one line per soil type (cut lines positive, fill lines negative)
+        const td = h('td', { class: 'lines', 'data-cell': s.id + ':qty' });
+        s.lines.forEach((l, li) => {
+          const sel = h('select', { title: 'Soil type', onchange: ev => { l.material = ev.target.value; recompute(true); } }, scn.materials.map(m => h('option', { value: m.id, selected: m.id === l.material }, m.name || m.id)));
+          const inp = h('input', { type: 'number', value: l.qty, step: 'any', title: 'Quantity: + cut, − fill' }); inp.addEventListener('input', () => { l.qty = inp.value === '' ? NaN : +inp.value; changed(false); });
+          td.append(h('div', { class: 'line' }, sel, inp, s.lines.length > 1 ? h('button', { class: 'icon', title: 'Remove this soil line', onclick: () => { s.lines.splice(li, 1); recompute(true); } }, '✕') : null));
+        });
+        td.append(h('button', { class: 'icon', title: 'Add a soil line', onclick: () => { s.lines.push({ material: scn.materials[0].id, qty: 0 }); recompute(true); } }, '+ line'));
+        return td;
+      };
       const days = h('td', { class: 'days', 'data-cell': s.id + ':workDays' });
       E.DOW_NAMES.forEach((dn, d) => days.append(h('label', {}, dn.slice(0, 2), h('br'), h('input', { type: 'checkbox', checked: !!s.workDays[d], onchange: ev => { s.workDays[d] = ev.target.checked ? 1 : 0; changed(false); } }))));
       const cells = [
         h('td', {}, i + 1),
         txt('name', 'text', () => s.name, v => (s.name = v)),
         txt('lengthM', 'number', () => s.lengthM, v => { s.lengthM = v === '' ? NaN : +v; updateChainage(); }),
-        txt('qty', 'number', () => M.secQty(s), v => M.setQty(s, v === '' ? NaN : +v)),
+        anyA() ? linesCell() : txt('qty', 'number', () => M.secQty(s), v => M.setQty(s, v === '' ? NaN : +v)),
         txt('workStart', 'time', () => s.workStart, v => (s.workStart = v)),
         txt('workEnd', 'time', () => s.workEnd, v => (s.workEnd = v)),
         txt('openFrom', 'date', () => s.openFrom, v => (s.openFrom = v))];
@@ -441,7 +462,7 @@
   }
   function moveSec(i, d) { const j = i + d; if (j < 0 || j >= scn.sections.length) return; const a = scn.sections; [a[i], a[j]] = [a[j], a[i]]; recompute(true); }
   function focusCell(cell) {
-    showScreen('main'); S.tab = cell.mod ? 'fleet' : 'sections'; renderTabs(true);
+    showScreen('main'); S.tab = cell.mod ? (cell.mod[0] === 'A' ? 'materials' : 'fleet') : 'sections'; renderTabs(true);
     const key = cell.settings ? 'settings:' + cell.settings : cell.mod ? 'mod:' + cell.mod + ':' + cell.field : cell.sec + ':' + cell.field;
     const el = document.querySelector('[data-cell="' + key + '"]'); if (!el) return;
     const inp = el.matches('input') ? el : el.querySelector('input');
@@ -486,6 +507,15 @@
       if (modOn('B4')) cards.push(stat(fmt(s.tipWaitMin / 60) + ' h', 'Lorry time queuing to tip'));
       if (cards.length) body.append(h('h3', {}, 'Fleet and plant'), h('div', { class: 'stats' }, cards));
     }
+    if (res.msum) { // A1-A5 results: what was placed, shipped and stored
+      const m = res.msum, money = v => '£' + fmt(v), un = Object.keys(m.unplacedByMat).filter(k => m.unplacedByMat[k] > 0.5);
+      body.append(...[h('h3', {}, 'Materials, imports and stockpiles'), h('div', { class: 'stats' },
+        stat(fmt(m.placedT) + ' t', 'Soil placed in fills'), modOn('A4') ? stat(fmt(m.importT) + ' t', 'Imported (' + money(m.importCost) + ')') : null, modOn('A4') ? stat(fmt(m.exportT) + ' t', 'Exported (' + money(m.exportCost) + ')') : null,
+        modOn('A5') ? stat(fmt(m.stockInT) + ' t in / ' + fmt(m.stockOutT) + ' t out', 'Stockpiles (handling ' + money(m.handleCost) + ')') : null, modOn('A5') && m.parkedT > 0.5 ? stat(fmt(m.parkedT) + ' t', 'Parked in a stockpile, nothing needs it') : null,
+        stat(money(m.importCost + m.exportCost + m.handleCost), 'Import, export and handling cost')),
+        un.length ? h('div', { class: 'note warn' }, 'Soil with nowhere to go: ' + un.map(k => matName(k) + ' ' + fmt(m.unplacedByMat[k]) + ' t').join(', ') + '. Allow it in a fill (Materials & sites), or add an export or a stockpile.') : null,
+        m.nodes.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Site', 'Type', 'Tonnes', 'Cost'].map((c, i) => h('th', { class: i > 1 ? 'num' : '' }, c)))), h('tbody', {}, m.nodes.map(x => h('tr', {}, h('td', {}, x.name), h('td', {}, x.kind === 1 ? 'Import' : x.kind === 2 ? 'Export' : 'Stockpile (in ' + fmt(x.tonnes) + ', out ' + fmt(x.out) + ', left ' + fmt(x.closing) + ')'), h('td', { class: 'num' }, fmt(x.kind === 3 ? x.out : x.tonnes) + ' t'), h('td', { class: 'num' }, money(x.cost))))))) : null].filter(Boolean));
+    }
     const name = i => P.names[i], list = o => Object.keys(o).map(k => name(+k) + ' (' + Q(o[k]) + ' ' + UL() + ')').join('; ');
     const tb = h('tbody');
     res.sections.forEach((r, i) => {
@@ -502,9 +532,9 @@
     const body = $('tabbody'); body.replaceChildren();
     if (!res) { body.append(h('div', { class: 'note err' }, 'Fix the problems under Messages first.')); return; }
     const L = res.log, P = res.P, tb = h('tbody'), n = Math.min(res.n, 300);
-    for (let k = 0; k < n; k++) tb.append(h('tr', {}, h('td', {}, k + 1), h('td', {}, P.names[L.src[k]]), h('td', {}, P.names[L.dst[k]]), h('td', { class: 'num' }, Q1(L.t[k])), h('td', {}, E.fmtTime(L.start[k], P.startDay)), h('td', {}, E.fmtTime(L.tip[k], P.startDay))));
+    for (let k = 0; k < n; k++) tb.append(h('tr', {}, h('td', {}, k + 1), h('td', {}, P.names[L.src[k]]), h('td', {}, P.names[L.dst[k]]), res.mlog ? h('td', {}, matName(res.mlog.mat[k])) : null, h('td', { class: 'num' }, Q1(L.t[k])), h('td', {}, E.fmtTime(L.start[k], P.startDay)), h('td', {}, E.fmtTime(L.tip[k], P.startDay))));
     body.append(h('p', {}, fmt(res.n) + ' movements in total' + (res.n > n ? '. The first ' + n + ' are shown; export the CSV for all of them. ' : '. '), h('button', { onclick: exportLog }, 'Export movement log CSV')),
-      h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['#', 'From', 'To', UL() === 't' ? 'Tonnes' : 'm³', 'Loading starts', 'Tipped'].map((c, i) => h('th', { class: i === 3 ? 'num' : '' }, c)))), tb)));
+      h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['#', 'From', 'To'].concat(res.mlog ? ['Soil'] : [], [UL() === 't' ? 'Tonnes' : 'm³', 'Loading starts', 'Tipped']).map((c, i) => h('th', { class: c === 'Tonnes' || c === 'm³' ? 'num' : '' }, c)))), tb)));
   }
 
 
@@ -629,7 +659,7 @@
     if (prof) prof.push(performance.now());
     // hauls: a band from the source (when it began) to the destination (when it last tipped), thickness = tonnes
     ctx.lineCap = 'butt'; ctx.strokeStyle = rgba(COL.ink, 0.34);
-    const byW = []; // one path and one stroke per whole-pixel width, so hundreds of bands stay cheap to draw
+    const byW = new Map(); // one path and one stroke per whole-pixel width (and material colour), so hundreds of bands stay cheap to draw
     const vis = [];
     for (const p of D.pairs) {
       const t0 = p.t0 / 1440, t1 = p.t1 / 1440; if ((t0 < win.t0 && t1 < win.t0) || (t0 > win.t0 + win.span && t1 > win.t0 + win.span)) continue;
@@ -641,10 +671,12 @@
     hit.hidden = Math.max(0, vis.length - MAXB);
     for (const p of (TC.skip && TC.skip.hauls ? [] : vis.slice(0, MAXB))) {
       const x1 = X(P.mid[p.src]), x2 = X(P.mid[p.dst]), y1 = Y(p.t0 / 1440), y2 = Y(p.t1 / 1440), lw = Math.max(1, Math.min(14, Math.round(14 * Math.sqrt(p.tonnes / Math.max(1, D.maxPair)))));
-      (byW[lw] = byW[lw] || []).push([x1, y1, x2, y2]);
+      const col = p.mat ? matCol(p.mat) : null, gk = lw + '|' + (col || '');
+      let gr = byW.get(gk); if (!gr) byW.set(gk, (gr = { lw, col, segs: [] }));
+      gr.segs.push([x1, y1, x2, y2]);
       hit.pairs.push({ p, x1, y1, x2, y2, lw });
     }
-    byW.forEach((segs, lw) => { if (!segs) return; ctx.lineWidth = lw; ctx.beginPath(); for (const q of segs) { ctx.moveTo(q[0], q[1]); ctx.lineTo(q[2], q[3]); } ctx.stroke(); });
+    [...byW.values()].sort((a, b) => a.lw - b.lw).forEach(gr => { ctx.strokeStyle = gr.col ? rgba(gr.col, 0.7) : rgba(COL.ink, 0.34); ctx.lineWidth = gr.lw; ctx.beginPath(); for (const q of gr.segs) { ctx.moveTo(q[0], q[1]); ctx.lineTo(q[2], q[3]); } ctx.stroke(); });
     ctx.lineCap = 'butt'; ctx.restore();
     // frame and legend
     ctx.strokeStyle = COL.line; ctx.strokeRect(0.5, tg.pt + 0.5, W - 1, tg.ph);
@@ -653,6 +685,7 @@
     item((x, y) => { for (let l = 0; l < 4; l++) { ctx.fillStyle = shades.cut[l * 2]; ctx.fillRect(x + l * 4, y, 4, 10); } }, 'cut (darker = more soil that day)');
     item((x, y) => { for (let l = 0; l < 4; l++) { ctx.fillStyle = shades.fill[l * 2]; ctx.fillRect(x + l * 4, y, 4, 10); } }, 'fill');
     item((x, y) => { ctx.strokeStyle = rgba(COL.ink, 0.5); ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(x, y + 8); ctx.lineTo(x + 14, y + 2); ctx.stroke(); }, 'haul (width = tonnes)');
+    if (res.mlog) { const seen = {}; for (const p of D.pairs) if (p.mat) seen[p.mat] = 1; Object.keys(seen).forEach(id => item((x, y) => { ctx.strokeStyle = rgba(matCol(id) || COL.ink, 0.85); ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(x, y + 8); ctx.lineTo(x + 14, y + 2); ctx.stroke(); }, matName(id))); }
     item((x, y) => { ctx.fillStyle = ctx.createPattern(hatchCv, 'repeat'); ctx.fillRect(x, y, 14, 10); }, 'not open for tipping');
     item((x, y) => { ctx.fillStyle = ctx.createPattern(hatchGrey, 'repeat'); ctx.fillRect(x, y, 14, 10); ctx.strokeStyle = COL.line; ctx.strokeRect(x + 0.5, y + 0.5, 13, 9); }, 'non-working day');
     item((x, y) => { ctx.strokeStyle = COL.accent; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x, y + 5); ctx.lineTo(x + 14, y + 5); ctx.stroke(); }, 'now');
@@ -670,7 +703,7 @@
     if (!res || !TC.data) { ctx.fillStyle = COL.panel; ctx.fillRect(0, 0, W, H); ctx.fillStyle = COL.mute; ctx.font = '14px system-ui'; ctx.fillText('Fix the problems under Messages to see the chart.', 16, 30); return; }
     const pa = TC.prof ? performance.now() : 0;
     g0 = geom(); const win = tcWindow(), tg = tcGeom(W, H, win, st);
-    const key = [TC.ver, W, H, dpr, S.x0.toFixed(3), S.zoom.toFixed(4), st.timeDown, win.t0.toFixed(3), win.span, COL.sand2, COL.accent2].join('|');
+    const key = [TC.ver, W, H, dpr, S.x0.toFixed(3), S.zoom.toFixed(4), st.timeDown, win.t0.toFixed(3), win.span, COL.sand2, COL.accent2, res.mlog ? scn.materials.map(m => m.id + m.colour).join(',') : ''].join('|');
     const pb = TC.prof ? performance.now() : 0;
     if (key !== TC.key || !TC.layer) { TC.layer = tcRenderLayer(W, H, dpr, tg, win, st); TC.key = key; }
     const pc = TC.prof ? performance.now() : 0;
@@ -707,7 +740,7 @@
     tip.replaceChildren();
     if (found.kind === 'pair') {
       const p = found.o.p;
-      tip.append(h('b', {}, P.names[p.src] + ' → ' + P.names[p.dst]), h('div', {}, Q(p.tonnes) + ' ' + UL() + ' in ' + fmt(p.count) + ' loads'), h('div', {}, dt(p.t0) + ' to ' + dt(p.t1)), h('div', {}, fmt1(E.dist(P, p.src, p.dst) / 1000) + ' km haul'));
+      tip.append(h('b', {}, P.names[p.src] + ' → ' + P.names[p.dst] + (p.mat ? ' (' + matName(p.mat) + ')' : '')), h('div', {}, Q(p.tonnes) + ' ' + UL() + ' in ' + fmt(p.count) + ' loads'), h('div', {}, dt(p.t0) + ' to ' + dt(p.t1)), h('div', {}, fmt1(E.dist(P, p.src, p.dst) / 1000) + ' km haul'));
     } else {
       const sec = TC.data.sections[found.o.i], r = res.sections[found.o.i];
       tip.append(h('b', {}, P.names[sec.i] + (sec.type === 'cut' ? ' (cut)' : ' (fill)')), h('div', {}, 'Earthworks ' + dt(sec.start) + ' to ' + dt(sec.end) + (sec.reached ? ', reaches level' : ', does not reach level')),
@@ -746,6 +779,82 @@
   })();
 
   // ---------- fleet and plant tab (B1 to B6) ----------
+  // ---------- Materials & sites (A1-A5) ----------
+  function renderMaterials() {
+    const body = $('tabbody'); body.replaceChildren();
+    const md = scn.modules, pane = h('div', { id: 'matpane' });
+    const hint = t => h('p', { class: 'hint' }, t);
+    const fld = (label, obj, key, cellId, o) => {
+      o = o || {};
+      const inp = h('input', { type: o.type || 'number', value: obj[key], step: 'any', 'data-cell': cellId });
+      inp.addEventListener('input', () => { obj[key] = o.type === 'text' ? inp.value : inp.value === '' ? NaN : +inp.value; changed(false); });
+      return h('div', {}, h('label', {}, label), inp);
+    };
+    const card = (id, title, kids) => h('div', { class: 'group' }, h('h4', {}, id + '  ' + title), kids);
+    const cellIn = (obj, key, cellId, type, w) => { const inp = h('input', { type: type || 'number', value: obj[key], step: 'any', 'data-cell': cellId, style: w ? 'min-width:' + w : '' }); inp.addEventListener('input', () => { obj[key] = type === 'text' ? inp.value : inp.value === '' ? NaN : +inp.value; changed(false); }); return h('td', {}, inp); };
+    const mats = scn.materials, tot = scn.sections.reduce((a, x) => a + (+x.lengthM || 0), 0);
+    const used = id => scn.sections.some(x => x.lines.some(l => l.material === id));
+    if (S.screen === 'main' && scn.settings.units === 'm3' && (modOn('A1') || modOn('A3'))) pane.append(h('div', { class: 'note' }, 'Quantities are entered in m³ at each material’s own density (and fill as compacted m³ when A1 is on). The results panels show m³ at the site density, so use the tonnes figures in the CSV exports for exact weights.'));
+    if (modOn('A1')) pane.append(card('A1', 'Bulking and compaction', [
+      h('div', { class: 'settings' }, fld('Lorry body volume (loose m³)', md.A1, 'bodyM3', 'mod:A1:bodyM3')),
+      hint('A load is limited by the lorry body as well as its payload: body volume ÷ bulking factor, times the soil’s density, is the most bank soil it can carry. A vehicle type can have its own body volume (B2). Cut quantities are in-situ (bank) soil; fill quantities are compacted.')]));
+    if (modOn('A1') || modOn('A2') || modOn('A3')) {
+      const tb = h('tbody');
+      mats.forEach(m => tb.append(h('tr', {},
+        cellIn(m, 'name', 'mod:A2:' + m.id + ':name', 'text', '130px'),
+        h('td', {}, h('input', { type: 'color', class: 'sw', value: m.colour || '#a0855b', title: 'Colour on the time-chainage chart', onchange: ev => { m.colour = ev.target.value; S.dirty = true; changed(false); } })),
+        modOn('A3') ? cellIn(m, 'density', 'mod:A3:' + m.id + ':density') : h('td', { class: 'num hint' }, scn.settings.density + ' (site)'),
+        modOn('A1') ? cellIn(m, 'bulking', 'mod:A1:' + m.id + ':bulking') : null,
+        modOn('A1') ? cellIn(m, 'compaction', 'mod:A1:' + m.id + ':compaction') : null,
+        h('td', {}, h('button', { class: 'icon', title: used(m.id) ? 'Used by a section line' : 'Remove this material', disabled: used(m.id) || mats.length < 2, onclick: () => { scn.materials = mats.filter(x => x !== m); delete md.A2.accept[m.id]; for (const k in md.A2.accept) delete md.A2.accept[k][m.id]; recompute(true); } }, '✕')))));
+      const heads = ['Soil type', 'Colour', 'Density (t per m³)'].concat(modOn('A1') ? ['Bulking (loose ÷ bank)', 'Compaction (compacted ÷ bank)'] : [], ['']);
+      pane.append(card(modOn('A3') ? 'A3' : modOn('A1') ? 'A1' : 'A2', 'Soil types', [
+        h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, heads.map(x => h('th', {}, x)))), tb)),
+        h('p', {}, h('button', { onclick: () => { const id = M.newId(), m = M.defaultMaterial(scn.settings, id); m.name = 'Soil type ' + (mats.length + 1); mats.push(m); md.A2.accept[id] = { [id]: true }; recompute(true); } }, '+ Add soil type')),
+        hint('Give each section line a soil type in the Sections table. A3 turns on the density column: quantities in m³ are converted to tonnes at each type’s own density instead of one site-wide figure.')]));
+    }
+    if (modOn('A2')) {
+      const head = h('tr', {}, h('th', {}, 'Fill asks for ↓ / may take →'), mats.map(m => h('th', {}, m.name || m.id)));
+      const rows = mats.map(req => h('tr', {}, h('th', {}, req.name || req.id), mats.map(src => {
+        const diag = req.id === src.id, acc = md.A2.accept[req.id] = md.A2.accept[req.id] || {};
+        return h('td', { class: 'ctr' }, h('input', { type: 'checkbox', checked: diag || !!acc[src.id], disabled: diag, title: diag ? 'A class always accepts itself' : (src.name || src.id) + ' may be placed in ' + (req.name || req.id) + ' fill', onchange: ev => { acc[src.id] = ev.target.checked; recompute(true); } }));
+      })));
+      pane.append(card('A2', 'Which soil may go where', [
+        h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, head), h('tbody', {}, rows))),
+        hint('Each fill line asks for a soil type. A tick means a different soil type may also be used for it. A load always goes first to a fill that asks for exactly its own type. Soil that fits nowhere is reported on the Messages tab, and it blocks the soil below it in its section.')]));
+    }
+    if (modOn('A4')) {
+      const pts = md.A4.points, tb = h('tbody');
+      pts.forEach(x => {
+        const imp = x.kind === 'import', acc = x.accepts = x.accepts || [];
+        const mc = f => 'mod:A4:' + x.id + ':' + f;
+        tb.append(h('tr', {},
+          cellIn(x, 'name', mc('name'), 'text', '120px'),
+          h('td', {}, imp ? 'Import' : 'Export'),
+          cellIn(x, 'chainageM', mc('chainageM')),
+          imp ? h('td', {}, h('select', { 'data-cell': mc('material'), onchange: ev => { x.material = ev.target.value; recompute(true); } }, mats.map(m => h('option', { value: m.id, selected: m.id === x.material }, m.name || m.id))))
+              : h('td', { class: 'acc' }, mats.map(m => h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: acc.indexOf(m.id) >= 0, onchange: ev => { x.accepts = ev.target.checked ? acc.concat([m.id]) : acc.filter(a => a !== m.id); recompute(true); } }), ' ' + (m.name || m.id))), acc.length ? null : h('span', { class: 'hint' }, ' (none ticked = takes anything)')),
+          cellIn(x, 'dailyT', mc('dailyT')), cellIn(x, 'costPerT', mc('costPerT')), cellIn(x, 'roundTripMin', mc('roundTripMin')),
+          imp ? cellIn(x, 'lanes', mc('lanes')) : h('td', {}, '–'),
+          h('td', {}, h('button', { class: 'icon', title: 'Remove this point', onclick: () => { md.A4.points = pts.filter(q => q !== x); recompute(true); } }, '✕'))));
+      });
+      pane.append(card('A4', 'Off-site import and export', [
+        h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Name', 'Type', 'Chainage (m)', 'Soil', 'Daily limit (t)', 'Cost (£ per t)', 'Round trip (min)', 'Loading lanes', ''].map(x => h('th', {}, x)))), tb)),
+        h('p', {}, h('button', { 'data-cell': 'mod:A4:add', onclick: () => { pts.push({ id: M.newId(), name: 'Export gate ' + (pts.length + 1), kind: 'export', chainageM: Math.round(tot / 2), accepts: [], dailyT: 1000, costPerT: 5, roundTripMin: 45, lanes: 4 }); recompute(true); } }, '+ Export gate'), ' ',
+          h('button', { onclick: () => { pts.push({ id: M.newId(), name: 'Import gate ' + (pts.length + 1), kind: 'import', material: mats[0].id, chainageM: Math.round(tot / 2), dailyT: 1000, costPerT: 10, roundTripMin: 45, lanes: 2 }); recompute(true); } }, '+ Import gate')),
+        hint('An export takes surplus soil that no fill needs (only once the fills that can take it are full). An import supplies only the shortfall. The round trip is the time a lorry spends off site: loading time at an import, the return after tipping at an export. Quantities here are always tonnes.')]));
+    }
+    if (modOn('A5')) {
+      const sts = md.A5.stockpiles, tb = h('tbody');
+      sts.forEach(x => { const mc = f => 'mod:A5:' + x.id + ':' + f; tb.append(h('tr', {}, cellIn(x, 'name', mc('name'), 'text', '120px'), cellIn(x, 'chainageM', mc('chainageM')), cellIn(x, 'capacityT', mc('capacityT')), cellIn(x, 'handleCostPerT', mc('handleCostPerT')), cellIn(x, 'lanes', mc('lanes')),
+        h('td', {}, h('button', { class: 'icon', title: 'Remove this stockpile', onclick: () => { md.A5.stockpiles = sts.filter(q => q !== x); recompute(true); } }, '✕')))); });
+      pane.append(card('A5', 'Stockpiles', [
+        h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Name', 'Chainage (m)', 'Capacity (t)', 'Handling cost (£ per t)', 'Loading lanes', ''].map(x => h('th', {}, x)))), tb)),
+        h('p', {}, h('button', { 'data-cell': 'mod:A5:add', onclick: () => { sts.push({ id: M.newId(), name: 'Stockpile ' + (sts.length + 1), chainageM: Math.round(tot / 2), capacityT: 10000, handleCostPerT: 2, lanes: 2 }); recompute(true); } }, '+ Add stockpile')),
+        hint('When soil cannot go to a fill yet (it is not open), it is tipped at the nearest stockpile with room, and hauled out from the next day once a fill can take it. Hauling it out again costs the handling charge. Soil that nothing needs any more goes to an export if there is one, otherwise it stays parked in the stockpile and is reported as unplaced.')]));
+    }
+    body.append(pane);
+  }
   function renderFleet() {
     const body = $('tabbody'); body.replaceChildren();
     const md = scn.modules, pane = h('div', { id: 'fleetpane' });
@@ -1013,8 +1122,8 @@
   }
   function exportLog() {
     if (!res) return; const L = res.log, P = res.P;
-    let out = '﻿' + csvHeader('Earthmove movement log') + csvRow(['Movement', 'From', 'To', UL() === 't' ? 'Tonnes' : 'm3', 'Distance km', 'Loading starts', 'Departs', 'Tipped']);
-    for (let k = 0; k < res.n; k++) out += csvRow([k + 1, P.names[L.src[k]], P.names[L.dst[k]], +(L.t[k] / UF()).toFixed(3), (E.dist(P, L.src[k], L.dst[k]) / 1000).toFixed(3), E.fmtTime(L.start[k], P.startDay), E.fmtTime(L.depart[k], P.startDay), E.fmtTime(L.tip[k], P.startDay)]);
+    let out = '﻿' + csvHeader('Earthmove movement log') + csvRow(['Movement', 'From', 'To', UL() === 't' ? 'Tonnes' : 'm3', 'Distance km', 'Loading starts', 'Departs', 'Tipped'].concat(res.mlog ? ['Soil', 'Tonnes (exact)'] : []));
+    for (let k = 0; k < res.n; k++) out += csvRow([k + 1, P.names[L.src[k]], P.names[L.dst[k]], +(L.t[k] / UF()).toFixed(3), (E.dist(P, L.src[k], L.dst[k]) / 1000).toFixed(3), E.fmtTime(L.start[k], P.startDay), E.fmtTime(L.depart[k], P.startDay), E.fmtTime(L.tip[k], P.startDay)].concat(res.mlog ? [matName(res.mlog.mat[k]), +L.t[k].toFixed(3)] : []));
     download(slug() + '_movement_log.csv', out, 'text/csv');
   }
   function setScenario(sc) { scn = M.normalise(sc); S.t = 0; S.zoom = 1; S.x0 = 0; S.delta = null; setPlaying(false); recompute(true); if (S.screen === 'setup') renderSetup(); }
