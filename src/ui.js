@@ -4,8 +4,9 @@
   const E = Engine, M = Model, MOD = Modules;
   const $ = id => document.getElementById(id);
   const STORE = 'earthmove.scenario.v1';
-  MOD.setBuilt(['A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'D5', 'E8']); // modules built so far
+  MOD.setBuilt(['A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'C1', 'C2', 'C3', 'C4', 'C5', 'D3', 'D4', 'D5', 'E8']); // modules built so far
   const modOn = id => !!(MOD.byId[id] && MOD.byId[id].built && scn.setup.modules[id]);
+  const anySite = () => ['C1', 'C2', 'C3', 'C4', 'C5', 'D4'].some(modOn); // site constraints and calendar (the D3 target dates live in the Sections table)
   const anyA = () => ['A1', 'A2', 'A3', 'A4', 'A5'].some(modOn); // any materials module on
   const matName = id => { const m = (scn.materials || []).find(x => x.id === id); return m ? (m.name || m.id) : id; };
   const matCol = id => { const m = (scn.materials || []).find(x => x.id === id); return m ? m.colour : null; };
@@ -269,6 +270,26 @@
       ctx.beginPath(); if (kind === 3) { ctx.moveTo(px, base - 12); ctx.lineTo(px - 7, base); ctx.lineTo(px + 7, base); } else if (kind === 1) { ctx.moveTo(px - 6, y0 - 5); ctx.lineTo(px + 6, y0 - 5); ctx.lineTo(px, y0 + 4); } else { ctx.moveTo(px - 6, y0 + 4); ctx.lineTo(px + 6, y0 + 4); ctx.lineTo(px, y0 - 5); } ctx.closePath(); ctx.fill();
       ctx.font = '10px system-ui'; ctx.fillText((kind === 1 ? 'Import: ' : kind === 2 ? 'Export: ' : 'Stockpile: ') + P.names[x], px + 8, y0 + 3);
     });
+    if (P.con) { // site constraints (C1-C5): blockages, closed sections and single-lane stretches, with their dates
+      ctx.font = '10px system-ui'; const dn = Math.floor(S.t / 1440);
+      (P.con.blocks || []).forEach((bk, k) => {
+        const px = X(bk.x); if (px < -30 || px > W + 30) return; const open = S.t >= bk.openAbs;
+        ctx.strokeStyle = ctx.fillStyle = open ? COL.mute : COL.err; ctx.lineWidth = open ? 1 : 3; ctx.setLineDash(open ? [3, 3] : []);
+        ctx.beginPath(); ctx.moveTo(px, base - 60); ctx.lineTo(px, base + 20); ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillText((open ? 'Open since ' : 'Blocked until ') + E.fmtDay(P.startDay + Math.floor(bk.openAbs / 1440)), px + 5, base - 50 - (k % 2) * 11);
+      });
+      (P.con.lanes || []).forEach(ln => {
+        const x1 = X(ln.a), x2 = X(ln.b); if (x2 < 0 || x1 > W) return;
+        ctx.strokeStyle = ctx.fillStyle = COL.accent; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x1, base + 8); ctx.lineTo(x2, base + 8); ctx.stroke();
+        ctx.fillText('Single lane: ' + (ln.alt ? 'alternating, ' + ln.phase + ' min phases' : ln.perHour + ' lorries per hour'), Math.max(x1, 2) + 3, base + 21);
+      });
+      if (P.con.closed) for (let i = 0; i < P.n; i++) {
+        const r = P.con.closed[i], hit = r && r.find(q => dn >= q[0] && dn < q[1]); if (!hit) continue;
+        const sx = X(P.chain[i]), sw = P.len[i] * ppm; if (sx + sw < 0 || sx > W) continue;
+        ctx.globalAlpha = 0.6; ctx.fillStyle = ctx.createPattern(hatchCv, 'repeat'); ctx.fillRect(sx, base - 70, sw, 70); ctx.globalAlpha = 1;
+        ctx.fillStyle = COL.err; ctx.font = 'bold 10px system-ui'; ctx.fillText(hit[1] === Infinity ? 'Closed for good' : 'Closed until ' + E.fmtDay(P.startDay + hit[1]), sx + 3, base - 74);
+      }
+    }
     // soil in transit
     const L = res.log, hi = E.upperBound(L.depart, S.t), lo = E.upperBound(L.depart, S.t - maxTrip - 1);
     const mps = speedMps(), bandMode = S.playing && mps > 720;
@@ -369,7 +390,7 @@
   })();
 
   // ---------- tabs ----------
-  const tabsList = () => [['sections', 'Sections']].concat(['B1', 'B2', 'B3', 'B4', 'B5', 'B6'].some(modOn) ? [['fleet', 'Fleet & plant']] : [], anyA() ? [['materials', 'Materials & sites']] : [], [['results', 'Results'], ['log', 'Movement log']]).concat(MOD.activeIds(scn).indexOf('D5') >= 0 ? [['scenarios', 'Scenarios']] : [], [['messages', 'Messages']]);
+  const tabsList = () => [['sections', 'Sections']].concat(['B1', 'B2', 'B3', 'B4', 'B5', 'B6'].some(modOn) ? [['fleet', 'Fleet & plant']] : [], anyA() ? [['materials', 'Materials & sites']] : [], anySite() ? [['site', 'Site & calendar']] : [], [['results', 'Results'], ['log', 'Movement log']]).concat(MOD.activeIds(scn).indexOf('D5') >= 0 ? [['scenarios', 'Scenarios']] : [], [['messages', 'Messages']]);
   function renderTabs(rebuildTable) {
     const tabs = $('tabs'); tabs.replaceChildren();
     const nMsg = allMessages().filter(m => m.level !== 'info').length;
@@ -378,6 +399,7 @@
     const body = $('tabbody');
     if (S.tab === 'sections') { if (rebuildTable || !body.firstChild || !body.querySelector('#sectable')) renderSections(); else updateChainage(); }
     else if (S.tab === 'fleet') { if (rebuildTable || !body.querySelector('#fleetpane')) renderFleet(); }
+    else if (S.tab === 'site') { if (rebuildTable || !body.querySelector('#sitepane')) renderSite(); }
     else if (S.tab === 'materials') { if (rebuildTable || !body.querySelector('#matpane')) renderMaterials(); }
     else if (S.tab === 'results') renderResults();
     else if (S.tab === 'log') renderLog();
@@ -408,6 +430,9 @@
     if (!b5m) heads.push(['Max loaders']);
     if (b3v) heads.push(['Speed limit (kph)', 1], ['Gradient factor, loaded', 1], ['Gradient factor, empty', 1]);
     if (b4v) heads.push(['Receiving rate (' + UL() + '/h)', 1], ['Tipping bays', 1]);
+    const c4v = modOn('C4') && scn.modules.C4.mode === 'bySection', d3v = modOn('D3');
+    if (c4v) heads.push(['Fill layers', 1], ['Wait between layers (days)', 1]);
+    if (d3v) heads.push(['Target date']);
     heads.push(['Working days'], ['Chainage (m)', 1], ['']);
     const tb = h('tbody');
     scn.sections.forEach((s, i) => {
@@ -446,6 +471,8 @@
       if (!b5m) cells.push(txt('maxLoaders', 'number', () => s.maxLoaders, v => (s.maxLoaders = v === '' ? NaN : +v)));
       if (b3v) cells.push(msec('B3', 'b3limit', 'limitKph', 'none'), msec('B3', 'b3gl', 'gradLoaded', '1'), msec('B3', 'b3ge', 'gradEmpty', '1'));
       if (b4v) cells.push(msec('B4', 'b4rate', 'rate', String(scn.modules.B4.rate), 'fill'), msec('B4', 'b4bays', 'bays', String(scn.modules.B4.bays), 'fill'));
+      if (c4v) cells.push(msec('C4', 'c4layers', 'layers', String(scn.modules.C4.layers), 'fill'), msec('C4', 'c4wait', 'waitDays', String(scn.modules.C4.waitDays), 'fill'));
+      if (d3v) cells.push(txt('d3target', 'date', () => (scn.modules.D3.targets || {})[s.id] || '', v => { (scn.modules.D3.targets = scn.modules.D3.targets || {})[s.id] = v; }));
       cells.push(days, h('td', { class: 'num', 'data-ch': i }, ''),
         h('td', { style: 'white-space:nowrap' },
           h('button', { class: 'icon', title: 'Move up', onclick: () => moveSec(i, -1) }, '↑'), h('button', { class: 'icon', title: 'Move down', onclick: () => moveSec(i, 1) }, '↓'),
@@ -462,7 +489,7 @@
   }
   function moveSec(i, d) { const j = i + d; if (j < 0 || j >= scn.sections.length) return; const a = scn.sections; [a[i], a[j]] = [a[j], a[i]]; recompute(true); }
   function focusCell(cell) {
-    showScreen('main'); S.tab = cell.mod ? (cell.mod[0] === 'A' ? 'materials' : 'fleet') : 'sections'; renderTabs(true);
+    showScreen('main'); S.tab = cell.mod ? (cell.mod[0] === 'A' ? 'materials' : /^[CD]/.test(cell.mod) ? 'site' : 'fleet') : 'sections'; renderTabs(true);
     const key = cell.settings ? 'settings:' + cell.settings : cell.mod ? 'mod:' + cell.mod + ':' + cell.field : cell.sec + ':' + cell.field;
     const el = document.querySelector('[data-cell="' + key + '"]'); if (!el) return;
     const inp = el.matches('input') ? el : el.querySelector('input');
@@ -506,6 +533,14 @@
       }
       if (modOn('B4')) cards.push(stat(fmt(s.tipWaitMin / 60) + ' h', 'Lorry time queuing to tip'));
       if (cards.length) body.append(h('h3', {}, 'Fleet and plant'), h('div', { class: 'stats' }, cards));
+    }
+    if (modOn('D3')) { // D3: target dates
+      const lt = E.lateness(scn, res);
+      if (lt.length) body.append(...[h('h3', {}, 'Target dates'), h('div', { class: 'stats' }, stat(lt.filter(x => x.late).length + ' of ' + lt.length, 'Sections late against their target date')),
+        h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Section', 'Target date', 'Reaches level', 'Days late'].map((c, i) => h('th', { class: i === 3 ? 'num' : '' }, c)))),
+          h('tbody', {}, lt.map(x => h('tr', {}, h('td', {}, x.name), h('td', {}, E.fmtDay(x.targetDay)), h('td', {}, x.reachedDay === null ? 'not reached' : E.fmtDay(x.reachedDay)),
+            h('td', { class: 'num', style: x.late ? 'color:var(--err);font-weight:600' : '' }, x.daysLate === null ? 'late' : x.daysLate ? x.daysLate + ' late' : 'on time'))))))]);
+      else body.append(h('p', { class: 'hint' }, 'Target dates (D3) is on, but no section has a target date yet. Enter them in the Sections table.'));
     }
     if (res.msum) { // A1-A5 results: what was placed, shipped and stored
       const m = res.msum, money = v => '£' + fmt(v), un = Object.keys(m.unplacedByMat).filter(k => m.unplacedByMat[k] > 0.5);
@@ -554,7 +589,7 @@
     if (!res || !modOn('E8')) { TC.data = null; TC.nonWork = null; return; }
     TC.data = E.chartData(res);
     const P = res.P; TC.nonWork = new Uint8Array(TC.data.nd + 2);
-    for (let d = 0; d < TC.nonWork.length; d++) { const dow = E.dowOf(P.startDay + d); TC.nonWork[d] = P.srcs.length && P.srcs.every(i => !P.workDays[i][dow]) ? 1 : 0; }
+    for (let d = 0; d < TC.nonWork.length; d++) { const dow = E.dowOf(P.startDay + d); TC.nonWork[d] = (P.cal && P.cal.dayOff[d]) || (P.srcs.length && P.srcs.every(i => !P.workDays[i][dow])) ? 1 : 0; }
   }
   function tcLayout() {
     const on = modOn('E8') && S.screen === 'main', st = tcSt();
@@ -694,6 +729,26 @@
     TC.hit = hit;
     return cv;
   }
+  // E8 overlays for Phase 5: days off (D4), blockages (C1), closed periods (C3), single-lane stretches (C2) and target dates (D3)
+  TC.overlays.push((ctx, env) => {
+    const { X, Y, P, win, plot, res: rs } = env, W = plot.w, d0 = Math.max(0, Math.floor(win.t0)), d1 = win.t0 + win.span + 1;
+    if (P.cal) for (let d = d0; d < d1 && d < P.cal.dayOff.length; d++) if (P.cal.dayOff[d]) { const ya = Y(d), yb = Y(d + 1); ctx.fillStyle = 'rgba(120,120,120,0.18)'; ctx.fillRect(PAD, Math.min(ya, yb), W - 2 * PAD, Math.max(1, Math.abs(yb - ya))); }
+    if (P.con) {
+      (P.con.lanes || []).forEach(ln => { ctx.fillStyle = rgba(COL.accent, 0.10); ctx.fillRect(X(ln.a), plot.t, X(ln.b) - X(ln.a), plot.h); });
+      (P.con.blocks || []).forEach(bk => {
+        const x = X(bk.x), ya = Y(0), yb = Y(bk.openAbs / 1440); ctx.fillStyle = ctx.createPattern(hatchCv, 'repeat'); ctx.fillRect(x - 3, Math.min(ya, yb), 6, Math.abs(yb - ya));
+        ctx.strokeStyle = COL.err; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x - 8, yb); ctx.lineTo(x + 8, yb); ctx.stroke();
+      });
+      if (P.con.closed) for (let i = 0; i < P.n; i++) (P.con.closed[i] || []).forEach(r => {
+        const ya = Y(Math.max(r[0], 0)), yb = Y(r[1] === Infinity ? d1 : r[1]), sx = X(P.chain[i]), sw = X(P.chain[i] + P.len[i]) - sx; if (sx + sw < 0 || sx > W) return;
+        ctx.globalAlpha = 0.55; ctx.fillStyle = ctx.createPattern(hatchCv, 'repeat'); ctx.fillRect(sx, Math.min(ya, yb), sw, Math.abs(yb - ya)); ctx.globalAlpha = 1;
+      });
+    }
+    if (modOn('D3')) E.lateness(scn, rs).forEach(x => { // a diamond at the target date on the section
+      const sx = X(P.chain[x.i] + P.len[x.i] / 2), y = Y(x.targetDay - P.startDay); ctx.fillStyle = x.late ? COL.err : '#2a7d3f';
+      ctx.beginPath(); ctx.moveTo(sx, y - 6); ctx.lineTo(sx + 6, y); ctx.lineTo(sx, y + 6); ctx.lineTo(sx - 6, y); ctx.closePath(); ctx.fill();
+    });
+  });
   let g0 = null;
   function drawTC() {
     if (!modOn('E8') || S.screen !== 'main') return;
@@ -779,6 +834,85 @@
   })();
 
   // ---------- fleet and plant tab (B1 to B6) ----------
+  // ---------- Site & calendar (C1-C5, D4) ----------
+  function renderSite() {
+    const body = $('tabbody'); body.replaceChildren();
+    const md = scn.modules, pane = h('div', { id: 'sitepane' }), tot = scn.sections.reduce((a, x) => a + (+x.lengthM || 0), 0);
+    const hint = t => h('p', { class: 'hint' }, t);
+    const fld = (label, obj, key, cellId, o) => {
+      o = o || {};
+      const inp = h('input', { type: o.type || 'number', value: obj[key], step: 'any', 'data-cell': cellId, placeholder: o.ph || '' });
+      inp.addEventListener('input', () => { obj[key] = o.type === 'text' || o.type === 'date' || o.type === 'time' ? inp.value : inp.value === '' ? (o.blank ? '' : NaN) : +inp.value; changed(false); });
+      return h('div', {}, h('label', {}, label), inp);
+    };
+    const card = (id, title, kids) => h('div', { class: 'group' }, h('h4', {}, id + '  ' + title), kids);
+    const cellIn = (obj, key, cellId, type, w) => { const inp = h('input', { type: type || 'number', value: obj[key], step: 'any', 'data-cell': cellId, style: w ? 'min-width:' + w : '' }); inp.addEventListener('input', () => { obj[key] = type === 'text' || type === 'date' || type === 'time' ? inp.value : inp.value === '' ? NaN : +inp.value; changed(false); }); return h('td', {}, inp); };
+    const rm = (arr, x, key, md2) => h('td', {}, h('button', { class: 'icon', title: 'Remove', onclick: () => { md2[key] = arr.filter(q => q !== x); recompute(true); } }, '✕'));
+    const tbl = (heads, rows) => h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, heads.map(x => h('th', {}, x)))), h('tbody', {}, rows)));
+    const dmy = d => { const n = E.parseISO(d); return n === null ? '' : E.fmtDay(n); };
+    if (modOn('D4')) {
+      const b = md.D4, shRows = b.shifts.map((x, k) => h('tr', {}, cellIn(x, 'start', 'mod:D4:shift' + k, 'time'), cellIn(x, 'end', 'mod:D4:shift' + k + 'e', 'time'), rm(b.shifts, x, 'shifts', b)));
+      const auto = b.holidaysAuto !== false, kids = [
+        h('h5', {}, 'Shifts'), tbl(['Shift starts', 'Shift finishes', ''], shRows),
+        h('p', {}, h('button', { onclick: () => { b.shifts.push({ start: '07:00', end: '19:00' }); recompute(true); } }, '+ Add a shift')),
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!b.replace, onchange: ev => { b.replace = ev.target.checked; recompute(true); } }), ' Shifts replace each section’s own working hours (otherwise a load may only start where a shift and the section’s hours overlap)'),
+        hint('A load may only START inside a shift. A shift cannot run past midnight: use two shifts instead. Each section’s own hours and working days are set in the Sections table.'),
+        h('h5', {}, 'Weekends and bank holidays'),
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!b.weekendSat, onchange: ev => { b.weekendSat = ev.target.checked; recompute(true); } }), ' Work Saturdays on every section'), ' ',
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!b.weekendSun, onchange: ev => { b.weekendSun = ev.target.checked; recompute(true); } }), ' Work Sundays on every section'),
+        h('br'), h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: b.holidaysOn !== false, onchange: ev => { b.holidaysOn = ev.target.checked; recompute(true); } }), ' Bank holidays are non-working days')];
+      if (b.holidaysOn !== false) {
+        if (auto) {
+          const y0 = parseInt(String(scn.settings.startDate).slice(0, 4), 10) || 2027, near = E.holidayList(scn).filter(x => { const n = E.parseISO(x.date); const s0 = E.parseISO(scn.settings.startDate); return n !== null && s0 !== null && n >= s0 && n < s0 + 460; });
+          kids.push(hint('England and Wales bank holidays, worked out by the usual rules (substitute days included). In the next 15 months: ' + (near.length ? near.map(x => dmy(x.date) + ' ' + x.name).join('; ') : 'none') + '.'),
+            h('p', {}, h('button', { onclick: () => { b.holidays = E.holidayList(scn).filter(x => x.date.slice(0, 4) >= String(y0) && x.date.slice(0, 4) < String(y0 + 5)); b.holidaysAuto = false; recompute(true); } }, 'Edit the holiday list')));
+        } else {
+          const rows = b.holidays.map((x, k) => h('tr', {}, cellIn(x, 'date', 'mod:D4:holiday' + k, 'date'), cellIn(x, 'name', 'mod:D4:holiday' + k + 'n', 'text', '180px'), rm(b.holidays, x, 'holidays', b)));
+          kids.push(tbl(['Date', 'Name', ''], rows),
+            h('p', {}, h('button', { onclick: () => { b.holidays.push({ date: '', name: 'Closure' }); recompute(true); } }, '+ Add a day'), ' ', h('button', { onclick: () => { b.holidaysAuto = true; recompute(true); } }, 'Go back to the automatic UK list')));
+        }
+      }
+      pane.append(card('D4', 'Calendar', kids));
+    }
+    if (modOn('C1')) {
+      const b = md.C1, rows = b.blocks.map(x => h('tr', {}, cellIn(x, 'name', 'mod:C1:' + x.id + ':name', 'text', '140px'), cellIn(x, 'chainageM', 'mod:C1:' + x.id + ':chainageM'), cellIn(x, 'openDate', 'mod:C1:' + x.id + ':openDate', 'date'), rm(b.blocks, x, 'blocks', b)));
+      pane.append(card('C1', 'Haul route blockages', [tbl(['Name', 'Chainage (m)', 'Open from', ''], rows),
+        h('p', {}, h('button', { 'data-cell': 'mod:C1:add', onclick: () => { b.blocks.push({ id: M.newId(), name: 'Blockage ' + (b.blocks.length + 1), chainageM: Math.round(tot / 2), openDate: scn.settings.startDate }); recompute(true); } }, '+ Add a blockage')),
+        hint('Nothing can pass a blockage (an unbuilt bridge, a river, a live road crossing) before its opening date. A lorry must reach the chainage on or after that date, so a long haul that leaves the day before can still cross just after midnight. Soil can still be tipped on either side, but a fill reachable only across a blockage cannot start earlier.')]));
+    }
+    if (modOn('C2')) {
+      const b = md.C2, rows = b.stretches.map(x => h('tr', {}, cellIn(x, 'name', 'mod:C2:' + x.id + ':name', 'text', '130px'), cellIn(x, 'fromM', 'mod:C2:' + x.id + ':fromM'), cellIn(x, 'toM', 'mod:C2:' + x.id + ':toM'),
+        h('td', {}, h('select', { onchange: ev => { x.mode = ev.target.value; recompute(true); } }, h('option', { value: 'rate', selected: x.mode !== 'alternate' }, 'Limit per hour'), h('option', { value: 'alternate', selected: x.mode === 'alternate' }, 'One direction at a time'))),
+        x.mode === 'alternate' ? cellIn(x, 'phaseMin', 'mod:C2:' + x.id + ':phaseMin') : cellIn(x, 'perHour', 'mod:C2:' + x.id + ':perHour'), rm(b.stretches, x, 'stretches', b)));
+      pane.append(card('C2', 'Single-lane stretches', [tbl(['Name', 'From chainage (m)', 'To chainage (m)', 'Control', 'Lorries per hour / phase length (min)', ''], rows),
+        h('p', {}, h('button', { 'data-cell': 'mod:C2:add', onclick: () => { b.stretches.push({ id: M.newId(), name: 'Lane ' + (b.stretches.length + 1), fromM: Math.round(tot / 3), toM: Math.round(tot / 3 + 300), mode: 'rate', perHour: 30, phaseMin: 15 }); recompute(true); } }, '+ Add a stretch')),
+        hint('With a limit per hour, a lorry that would be the next one over the limit waits for the next hour. With one direction at a time, the stretch alternates direction in phases (rising chainage first); a lorry that cannot clear the stretch before its phase ends waits for the next phase in its direction. Only loaded trips are delayed.')]));
+    }
+    if (modOn('C3')) {
+      const b = md.C3, rows = b.periods.map(x => h('tr', {},
+        h('td', {}, h('select', { 'data-cell': 'mod:C3:' + x.id + ':sec', onchange: ev => { x.sec = ev.target.value; recompute(true); } }, h('option', { value: 'all', selected: !x.sec || x.sec === 'all' }, 'All sections'), scn.sections.map(sec => h('option', { value: sec.id, selected: x.sec === sec.id }, sec.name)))),
+        cellIn(x, 'from', 'mod:C3:' + x.id + ':from', 'date'), cellIn(x, 'to', 'mod:C3:' + x.id + ':to', 'date'), cellIn(x, 'note', 'mod:C3:' + x.id + ':note', 'text', '150px'), rm(b.periods, x, 'periods', b)));
+      pane.append(card('C3', 'Closing dates and closed periods', [tbl(['Section', 'Closed from', 'Closed until (blank = for good)', 'Reason', ''], rows),
+        h('p', {}, h('button', { 'data-cell': 'mod:C3:add', onclick: () => { b.periods.push({ id: M.newId(), sec: 'all', from: scn.settings.startDate, to: scn.settings.startDate, note: 'Closed' }); recompute(true); } }, '+ Add a closed period')),
+        hint('While a section is closed nothing loads from it and nothing tips into it (ecology windows, utility diversions, handover). Lorries can still drive through. Loads for a closed fill wait for it to reopen. The earliest tipping date in the Sections table is the opening date; this adds closing dates and closed periods to it.')]));
+    }
+    if (modOn('C4')) {
+      const b = md.C4;
+      pane.append(card('C4', 'Layered fill', [h('div', { class: 'settings' }, fld('Layers in each fill', b, 'layers', 'mod:C4:layers'), fld('Wait before the next layer (days)', b, 'waitDays', 'mod:C4:waitDays')),
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: b.mode === 'bySection', onchange: ev => { b.mode = ev.target.checked ? 'bySection' : 'site'; recompute(true); } }), ' Vary by section ', h('span', { class: 'hint' }, 'adds layer and wait columns for fill sections')),
+        hint('Each fill takes its soil in equal layers. The next layer opens after the waiting period (settlement or surcharge), counted from the last tip in the layer before. A load never straddles two layers, so each layer boundary adds one short load. One layer with no wait is the same as having this module off.')]));
+    }
+    if (modOn('C5')) {
+      const b = md.C5, rows = b.publicStretches.map(x => h('tr', {}, cellIn(x, 'name', 'mod:C5:' + x.id + ':name', 'text', '140px'), cellIn(x, 'fromM', 'mod:C5:' + x.id + ':fromM'), cellIn(x, 'toM', 'mod:C5:' + x.id + ':toM'), rm(b.publicStretches, x, 'publicStretches', b)));
+      pane.append(card('C5', 'Public road versus internal movements', [
+        h('div', { class: 'settings' }, fld('Public-road movements allowed per day', b, 'publicLimit', 'mod:C5:publicLimit'), fld('Internal movements allowed per day (blank = no extra limit)', b, 'internalLimit', 'mod:C5:internalLimit', { blank: true })),
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!b.publicAll, onchange: ev => { b.publicAll = ev.target.checked; recompute(true); } }), ' Treat every movement as a public-road movement'),
+        tbl(['Public-road stretch', 'From chainage (m)', 'To chainage (m)', ''], rows),
+        h('p', {}, h('button', { 'data-cell': 'mod:C5:add', onclick: () => { b.publicStretches.push({ id: M.newId(), name: 'Public road ' + (b.publicStretches.length + 1), fromM: 0, toM: Math.round(tot / 4) }); recompute(true); } }, '+ Add a public-road stretch')),
+        hint('A movement is public if its route overlaps a listed stretch (or if you tick the box above, or if it goes to or from an off-site gate). The planning cap counts public movements only; the whole-site daily limit in the global settings still applies to all movements. A vehicle type that may not use public roads (B2) never makes a public movement.')]));
+    }
+    body.append(pane);
+  }
   // ---------- Materials & sites (A1-A5) ----------
   function renderMaterials() {
     const body = $('tabbody'); body.replaceChildren();

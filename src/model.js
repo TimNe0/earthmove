@@ -422,7 +422,23 @@
     m.A5.stockpiles = [{ id: 'stk1', name: 'Topsoil bank', chainageM: 2500, capacityT: 20000, handleCostPerT: 1.8, lanes: 2 }];
     return normalise(o);
   }
-  const EXAMPLES = { simple: exampleSimple, modules: exampleModules, materials: exampleMaterials };
+  // Fourth example: the 8 km road with the site-constraint and calendar modules (C1-C5, D3, D4) switched on.
+  function exampleSite() {
+    const o = exampleSimple();
+    o.name = 'Site demo: blockage, closures, layers, lane works and a calendar on the 8 km road';
+    o.setup.level = 'custom';
+    ['C1', 'C2', 'C3', 'C4', 'C5', 'D3', 'D4'].forEach(id => (o.setup.modules[id] = true));
+    const m = o.modules;
+    m.D4.weekendSat = true;   // Saturday working, and the automatic UK bank holiday list
+    m.C1.blocks = [{ id: 'bridge', name: 'River bridge', chainageM: 4900, openDate: '2027-02-22' }];
+    m.C2.stretches = [{ id: 'lane1', name: 'Utility diversion', fromM: 2000, toM: 2400, mode: 'rate', perHour: 40, phaseMin: 15 }];
+    m.C3.periods = [{ id: 'bats', sec: 's6', from: '2027-02-01', to: '2027-02-14', note: 'Bat survey' }];
+    m.C4 = { layers: 1, waitDays: 0, mode: 'bySection', bySection: { s5: { layers: 4, waitDays: 3 }, s11: { layers: 3, waitDays: 2 } } };
+    m.C5 = { publicLimit: 60, internalLimit: '', publicAll: false, publicStretches: [{ id: 'jn', name: 'Junction road', fromM: 5600, toM: 6400 }] };
+    m.D3.targets = { s5: '2027-02-28', s7: '2027-03-12', s12: '2027-03-05' };
+    return normalise(o);
+  }
+  const EXAMPLES = { simple: exampleSimple, modules: exampleModules, materials: exampleMaterials, site: exampleSite };
 
-  return { VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, exampleSimple, exampleModules, exampleMaterials };
+  return { VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, exampleSimple, exampleModules, exampleMaterials, exampleSite };
 });

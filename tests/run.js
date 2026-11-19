@@ -1262,6 +1262,20 @@ console.log('\n49. PHASE 5 SWEEP: every site-constraint and calendar module at i
   ok(JSON.stringify(P5.map(id => mid.modules[id])) === before, 'every entry is kept when all seven are switched off, saved, loaded and switched on again');
 }
 
+console.log('\n50. THE SITE DEMO EXAMPLE: every Phase 5 module on the 8 km road');
+{
+  const ex = Model.exampleSite(), r = audit('Site demo', ex), plain = Engine.simulate(Model.exampleSimple());
+  ok(Model.validate(ex).filter(x => x.level === 'error').length === 0, 'the Site demo has no validation errors');
+  ok(r.summary.unfilled < 1e-6 && Math.abs(r.summary.unplacedSurplus - plain.summary.unplacedSurplus) < 1, 'every fill is filled and the surplus is the same 16,000 t as the plain road');
+  ok(r.P.con.blocks.length === 1 && r.P.con.lanes.length === 1 && r.P.con.closed[5] && r.P.con.layers && r.P.con.pub && r.P.cal, 'every constraint layer is active in the engine');
+  const late = Engine.lateness(ex, r);
+  ok(late.length === 3 && late.find(x => x.id === 's7').daysLate === 1 && late.filter(x => x.late).length === 1, 'target dates: exactly one section (S7, the bridge approach behind the blockage) is late, by 1 day');
+  const noBridge = Model.exampleSite(); noBridge.modules.C1.blocks = [];
+  const nb = Engine.simulate(noBridge);
+  ok(nb.summary.tonneKm !== r.summary.tonneKm, 'the blockage changes which fills the soil goes to (tonne-km ' + Math.round(nb.summary.tonneKm) + ' without it, ' + Math.round(r.summary.tonneKm) + ' with it)');
+  ok(Engine.lateness(noBridge, Engine.simulate(noBridge)).filter(x => x.late).length === 0, 'without the blockage nothing is late');
+}
+
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
 {
   const a = Model.exampleSimple(); a.setup.level = 'custom'; a.modules.B1 = { site: { fleet: 12 }, mode: 'site' };

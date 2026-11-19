@@ -6,7 +6,8 @@ STATUS: run in progress. This file is updated after every step, so it is valid e
 - `step0-green`: compaction default 1.0, branch cleanup, dispatcher merge attempted and NOT adopted (see DECISIONS 3-4). Last known good before this run: `phase4-done`.
 
 ## Built
-- Phase 5 engine, all seven modules, with validation and hand-checked tests (42-49): D4 calendar (`d4-green`), C3 closed periods (`c3-green`), C1 route blockages (`c1-green`), C4 layered fill (`c4-green`), C2 single-lane stretches and C5 public/internal caps (`c2c5-green`), D3 target dates and the Phase 5 sweep (`phase5-engine-green`). UI comes next.
+- Phase 5 engine, all seven modules, with validation and hand-checked tests (42-49): D4 calendar (`d4-green`), C3 closed periods (`c3-green`), C1 route blockages (`c1-green`), C4 layered fill (`c4-green`), C2 single-lane stretches and C5 public/internal caps (`c2c5-green`), D3 target dates and the Phase 5 sweep (`phase5-engine-green`). UI: the Site & calendar tab, Sections columns (target date, layers), road-view markers, results (target dates) and E8 overlays; Site demo example; test 50; browser script `tests/browser/drive_site.js` (21 checks).
+- `phase5-green`: all of the above, merged-in gates passed.
 - A1 default compaction 1.0 (test 41).
 - `tests/perf.js`: speed harness for comparing an engine directory with `.baseline`.
 
@@ -16,9 +17,10 @@ STATUS: run in progress. This file is updated after every step, so it is valid e
 ## Test results per step
 - Step 0: tests/run.js all pass (289 checks), tests/diff.js 0 differences over 109 scenarios.
 - Phase 5 engine: tests/run.js all pass, tests/diff.js 0 differences over 181 scenarios (every new module ticked at neutral settings reproduces the original engine exactly); plain-job speed equal to baseline (S12 2.70-2.89 ms vs 2.73-2.80 ms).
+- Phase 5 complete: tests/run.js 432 checks pass, tests/diff.js 181 scenarios 0 differences; browser: drive_site 21, drive_materials 24, drive5 23, drive7 7 all pass.
 
 ## Open items
-(none yet)
+- The greedy nearest-fill dispatcher is not monotone: a constraint can occasionally improve the result (see DECISIONS 13). Not a bug, but the optimiser may find large gains on constrained jobs.
 
 ## Check by hand first
 (none yet)
