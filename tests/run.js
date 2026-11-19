@@ -838,6 +838,46 @@ console.log('\n38. A5 STOCKPILES: soil is parked when the fill is not open, haul
   ok(Model.validate(mk('2027-01-13', 60)).filter(x => x.level === 'error').length === 0, 'valid A5 settings raise no errors');
 }
 
+console.log('\n39. OPTIMISER WITH MATERIAL MODULES: plans respect the class rules and never make things worse');
+{
+  // Two cuts (rock, clay) and two fills (rock, clay), laid out so greedy nearest-first dispatch crosses over:
+  // E clay fill 0-1000 | S1 rock cut 1000-2000 | S2 clay cut 2000-3000 | D rock fill 3000-3800. 20 t of each, one 20 t load each.
+  const o = Model.defaults(); o.settings.startDate = '2027-01-11';
+  const mk = (id, len, mat, q) => { const x = Model.newSection(0); x.id = id; x.name = id; x.lengthM = len; x.lines = [{ material: mat, qty: q }]; x.maxLoaders = 1; return x; };
+  o.sections = [mk('E', 1000, 'clay', -20), mk('S1', 1000, 'rock', 20), mk('S2', 1000, 'clay', 20), mk('D', 800, 'rock', -20)];
+  const sc = withMods(Model.normalise(o), { A2: true });
+  const base = Engine.simulate(sc);
+  // hand: classes force S1 (rock) to D (rock fill) and S2 (clay) to E (clay fill); midpoints E 500, S1 1500, S2 2500, D 3400.
+  // S1->D 1.9 km x 20 t = 38, S2->E 2.0 km x 20 t = 40: 78 tonne-km, and nothing else is allowed.
+  ok(base.log.dst.map(j => base.P.ids[j]).join() === 'D,E' && Math.abs(base.summary.tonneKm - 78) < 1e-9, 'hand: classes fix the flows (S1 to D, S2 to E): 78 tonne-km (sim ' + base.summary.tonneKm + ')');
+  const a = runOpt(sc, 'tonneKm', 1e9, { maxIter: 200 }), b = runOpt(sc, 'tonneKm', 1e9, { maxIter: 200 });
+  ok(JSON.stringify(a.plan) === JSON.stringify(b.plan), 'same seed and iteration count give the same result with A2 on');
+  const planned = Object.assign({}, sc, { plan: a.plan });
+  if (a.plan) { const r = audit('A2 optimised plan', planned); ok(r.summary.tonneKm <= base.summary.tonneKm + 1e-9 && r.summary.complete, 'the plan is never worse than the dispatch it replaces'); } else ok(a.after.tonneKm <= base.summary.tonneKm + 1e-9, 'no better plan exists: the current dispatch is kept (already optimal under the class rules)');
+  // no plan arc ever connects a source and fill that share no accepted class
+  const bad = (a.plan ? a.plan.arcs : []).filter(x => x.tonnes > 0 && !((x.from === 'S1' && x.to === 'D') || (x.from === 'S2' && x.to === 'E'))).length;
+  ok(bad === 0, 'no plan arc breaks the class rules');
+  // a class-free job still optimises as before (the A2 columns are all open)
+  const one = withMods(Model.exampleSimple(), { A2: true });
+  const oneBase = Engine.simulate(one), oneOpt = runOpt(one, 'tonneKm', 1e9, { maxIter: 60 });
+  ok(oneOpt.after.tonneKm <= oneBase.summary.tonneKm + 1e-6 && oneOpt.after.placedT !== undefined, 'one class: the optimiser runs and reports placed tonnes');
+  // import and export scenarios: placed tonnes never drop
+  const ex = withMods(tiny(), { A4: true }, { A4: { points: [{ id: 'p1', name: 'Gate', kind: 'export', chainageM: 0, dailyT: 1e6, costPerT: 5, roundTripMin: 30 }] } });
+  Model.setQty(ex.sections[0], 140);
+  const exo = runOpt(ex, 'tonneKm', 1e9, { maxIter: 60 }), exb = Engine.simulate(ex);
+  ok(exo.after.placedT >= exb.msum.placedT - 1e-9 && exo.after.exportT === exb.msum.exportT, 'export scenario: placed and exported tonnes are kept');
+  const im = withMods(tiny(), { A4: true }, { A4: { points: [{ id: 'q1', name: 'Quarry', kind: 'import', material: 'general', chainageM: 2000, dailyT: 1e6, costPerT: 8, roundTripMin: 40, lanes: 2 }] } });
+  Model.setQty(im.sections[0], 60);
+  const imo = runOpt(im, 'completion', 1e9, { maxIter: 60 }), imb = Engine.simulate(im);
+  ok(imo.after.endTime <= imb.summary.endTime && imo.after.placedT >= imb.msum.placedT - 1e-9, 'import scenario: the plan is not worse, and the fill is still fully placed');
+  // stockpile scenario: a plan may be made, and the stockpile fallback keeps working under it
+  const st = withMods(tiny(), { A5: true }, { A5: { stockpiles: [{ id: 'k1', name: 'Dump', chainageM: 1000, capacityT: 60, handleCostPerT: 2, lanes: 1 }] } });
+  st.sections[1].openFrom = '2027-01-13';
+  const sto = runOpt(st, 'tonneKm', 1e9, { maxIter: 60 }), stb = Engine.simulate(st);
+  ok(sto.after.placedT >= stb.msum.placedT - 1e-9, 'stockpile scenario: the optimiser keeps all soil placed');
+  if (sto.plan) audit('A5 optimised plan', Object.assign({}, st, { plan: sto.plan }));
+}
+
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
 {
   const a = Model.exampleSimple(); a.setup.level = 'custom'; a.modules.B1 = { site: { fleet: 12 }, mode: 'site' };

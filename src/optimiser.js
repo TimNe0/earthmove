@@ -33,12 +33,15 @@
 
   // Lower is better. Soil left unmoved always dominates; then the chosen goal; then small tie-breaks.
   function scoreOf(goal, s, maxFlow) {
-    const lost = Math.max(0, maxFlow - s.tonnesMoved);
+    const lost = Math.max(0, maxFlow - (s.placedT !== undefined ? s.placedT : s.tonnesMoved)); // material modules: soil placed in fills, not haulage
     const pen = lost > 0.5 ? 1e9 + lost * 1e3 : 0;
-    if (goal === 'completion') return pen + s.endTime + s.tonneKm * 1e-4;
-    if (goal === 'utilisation') return pen - s.utilisation * 1e6 + s.endTime * 0.1;
-    return pen + s.tonneKm + s.endTime * 1e-3;
+    const money = (s.cost || 0) * 1e-6; // import, export and handling cost break ties between otherwise equal plans
+    if (goal === 'completion') return pen + s.endTime + s.tonneKm * 1e-4 + money;
+    if (goal === 'utilisation') return pen - s.utilisation * 1e6 + s.endTime * 0.1 + money;
+    return pen + s.tonneKm + s.endTime * 1e-3 + money;
   }
+  // the summary the score reads: the core summary, plus placed tonnes and money when a material module is on
+  const scoreSummary = r => (r.msum ? Object.assign({ placedT: r.msum.placedT, cost: r.msum.importCost + r.msum.exportCost + r.msum.handleCost }, r.summary) : r.summary);
 
   const minCostFlow = Engine.minCostFlow; // lives in the engine so material nodes can reuse it
 
@@ -48,7 +51,9 @@
       completion: s.completion, endTime: s.endTime, completionDay: s.completionDay, moves: s.moves, tonnesMoved: s.tonnesMoved, tonneKm: s.tonneKm,
       utilisation: s.utilisation, idleDays: s.idleDays, workingSpan: s.workingSpan, unplacedSurplus: s.unplacedSurplus, unfilled: s.unfilled,
       peakTrucks: ts.peak, p95Trucks: ts.p95, truckHours: ts.truckHours, startDay: res.P.startDay,
-      fleetSize: s.fleetSize, fleetDelayMin: s.fleetDelayMin, tipWaitMin: s.tipWaitMin
+      fleetSize: s.fleetSize, fleetDelayMin: s.fleetDelayMin, tipWaitMin: s.tipWaitMin,
+      placedT: res.msum ? res.msum.placedT : undefined, importT: res.msum ? res.msum.importT : undefined, exportT: res.msum ? res.msum.exportT : undefined,
+      parkedT: res.msum ? res.msum.parkedT : undefined, materialCost: res.msum ? res.msum.importCost + res.msum.exportCost + res.msum.handleCost : undefined
     };
   }
 
@@ -59,14 +64,19 @@
     const t0 = Date.now();
     const supply = srcs.map(i => P.qty[i]), need = dsts.map(j => -P.qty[j]);
     const sum = a => a.reduce((x, y) => x + y, 0);
-    const maxFlow = Math.min(sum(supply), sum(need));
+    // which source may send to which fill: with A2 on, a fill must accept at least one material the source digs
+    const M = P.cfg.mat, elig = new Uint8Array(ns * nd).fill(1), cost = new Float64Array(ns * nd);
+    for (let s = 0; s < ns; s++) for (let d = 0; d < nd; d++) {
+      if (M && M.a2 && P.kind[srcs[s]] !== 3 && !M.srcLines[srcs[s]].some(l => M.dstLines[dsts[d]].some(f => M.acc[f.req][l.m]))) elig[s * nd + d] = 0;
+      cost[s * nd + d] = elig[s * nd + d] ? Engine.dist(P, srcs[s], dsts[d]) / 1000 : Infinity;   // Infinity = not allowed
+    }
+    let maxFlow = Math.min(sum(supply), sum(need)), mc0 = null;
+    if (M && ns && nd) { mc0 = minCostFlow(supply, need, cost); maxFlow = mc0.total; }     // the most that classes and imports allow to be placed
     const before = Engine.simulate(scn, { P });           // what the user sees now (active plan or greedy dispatch)
-    const beforeScore = scoreOf(goal, before.summary, maxFlow);
+    const beforeScore = scoreOf(goal, scoreSummary(before), maxFlow);
     const job = { done: false, iter: 0, evals: 0, result: null };
     if (!ns || !nd) { job.done = true; job.result = { improved: false, goal, reason: 'There is nothing to optimise: a plan needs at least one cut and one fill section.', before: pack(before), after: pack(before), plan: null, iterations: 0 }; job.step = () => job; job.progress = () => ({ iter: 0, frac: 1 }); return job; }
 
-    const cost = new Float64Array(ns * nd);
-    for (let s = 0; s < ns; s++) for (let d = 0; d < nd; d++) cost[s * nd + d] = Engine.dist(P, srcs[s], dsts[d]) / 1000;
     const byDist = s => Array.from({ length: nd }, (_, d) => d).sort((a, b) => cost[s * nd + a] - cost[s * nd + b] || a - b);
 
     function makePlan(st) {
@@ -82,7 +92,7 @@
     function evaluate(st) {
       job.evals++;
       const r = Engine.simulate(scn, { P, plan: makePlan(st), noLog: true });
-      return { score: scoreOf(goal, r.summary, maxFlow), summary: r.summary };
+      return { score: scoreOf(goal, scoreSummary(r), maxFlow), summary: r.summary };
     }
 
     // start point A: the flows the current dispatch produced, in the order each source first used them
@@ -90,12 +100,13 @@
     const sIdx = {}, dIdx = {}; srcs.forEach((i, s) => (sIdx[i] = s)); dsts.forEach((j, d) => (dIdx[j] = d));
     for (let k = 0; k < before.n; k++) {
       const s = sIdx[before.log.src[k]], d = dIdx[before.log.dst[k]];
+      if (s === undefined || d === undefined) continue; // loads to an export gate or a stockpile are not section-to-section flows
       FA[s * nd + d] += before.log.t[k]; if (before.log.start[k] < first[s * nd + d]) first[s * nd + d] = before.log.start[k];
     }
     const stA = { F: FA, order: [], rank: Float64Array.from(srcs, (_, s) => s) };
     for (let s = 0; s < ns; s++) stA.order.push(byDist(s).sort((a, b) => first[s * nd + a] - first[s * nd + b]));
     // start point B: the exact lowest tonne-km flows, nearest first
-    const mc = minCostFlow(supply, need, cost);
+    const mc = mc0 || minCostFlow(supply, need, cost);
     const stB = { F: mc.F, order: Array.from({ length: ns }, (_, s) => byDist(s)), rank: Float64Array.from(srcs, (_, s) => s) };
     const eA = evaluate(stA), eB = evaluate(stB);
     let cur = eB.score < eA.score ? stB : stA, curE = eB.score < eA.score ? eB : eA;
@@ -117,6 +128,7 @@
         const s1 = Math.floor(a / nd), d1 = a % nd, s2 = Math.floor(b / nd), d2 = b % nd;
         if (s1 === s2 || d1 === d2) return null;
         const dl = Math.min(c.F[a], c.F[b], loadsOf()); if (dl < 1e-6) return null;
+        if (!elig[s1 * nd + d2] || !elig[s2 * nd + d1]) return null;
         c.F[a] -= dl; c.F[b] -= dl; c.F[s1 * nd + d2] += dl; c.F[s2 * nd + d1] += dl; return c;
       }
       if (u < 0.55) { // reassign: another source (with soil to spare) supplies this destination, or this source tips elsewhere (destination with room)
@@ -126,12 +138,12 @@
           const cand = []; for (let s = 0; s < ns; s++) if (s !== s1 && supply[s] - rows[s] > 0.5) cand.push(s);
           if (!cand.length) return null;
           const s2 = cand[Math.floor(rand() * cand.length)], dl = Math.min(c.F[a], supply[s2] - rows[s2], loadsOf());
-          if (dl < 1e-6) return null; c.F[a] -= dl; c.F[s2 * nd + d1] += dl; return c;
+          if (dl < 1e-6 || !elig[s2 * nd + d1]) return null; c.F[a] -= dl; c.F[s2 * nd + d1] += dl; return c;
         }
         const cand = []; for (let d = 0; d < nd; d++) if (d !== d1 && need[d] - cols[d] > 0.5) cand.push(d);
         if (!cand.length) return null;
         const d2 = cand[Math.floor(rand() * cand.length)], dl = Math.min(c.F[a], need[d2] - cols[d2], loadsOf());
-        if (dl < 1e-6) return null; c.F[a] -= dl; c.F[s1 * nd + d2] += dl; return c;
+        if (dl < 1e-6 || !elig[s1 * nd + d2]) return null; c.F[a] -= dl; c.F[s1 * nd + d2] += dl; return c;
       }
       if (u < 0.85) { // reorder one source's destination priority
         const s = Math.floor(rand() * ns), us = st.order[s].filter(d => st.F[s * nd + d] > 1e-6);
