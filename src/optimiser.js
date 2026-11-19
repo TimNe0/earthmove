@@ -40,45 +40,7 @@
     return pen + s.tonneKm + s.endTime * 1e-3;
   }
 
-  // Exact minimum tonne-km flow (transportation problem) by successive shortest paths.
-  // supply[s], need[d], cost[s*nd+d] (km). Returns flat flow array and total flow.
-  function minCostFlow(supply, need, cost) {
-    const ns = supply.length, nd = need.length, S = 0, T = ns + nd + 1, N = T + 1;
-    const to = [], cap = [], cst = [], nxt = [], head = new Array(N).fill(-1);
-    const add = (u, v, c, w) => {
-      to.push(v); cap.push(c); cst.push(w); nxt.push(head[u]); head[u] = to.length - 1;
-      to.push(u); cap.push(0); cst.push(-w); nxt.push(head[v]); head[v] = to.length - 1;
-    };
-    for (let s = 0; s < ns; s++) add(S, 1 + s, supply[s], 0);
-    for (let s = 0; s < ns; s++) for (let d = 0; d < nd; d++) add(1 + s, 1 + ns + d, Infinity, cost[s * nd + d]);
-    for (let d = 0; d < nd; d++) add(1 + ns + d, T, need[d], 0);
-    const EPS = 1e-9;
-    let total = 0;
-    for (let guard = 0; guard < 100000; guard++) {
-      const dist = new Float64Array(N).fill(Infinity), inq = new Uint8Array(N), prev = new Int32Array(N).fill(-1);
-      dist[S] = 0; const q = [S]; inq[S] = 1;
-      for (let qi = 0; qi < q.length; qi++) {
-        const u = q[qi]; inq[u] = 0;
-        for (let e = head[u]; e >= 0; e = nxt[e]) {
-          if (cap[e] > EPS && dist[u] + cst[e] < dist[to[e]] - 1e-12) {
-            dist[to[e]] = dist[u] + cst[e]; prev[to[e]] = e;
-            if (!inq[to[e]]) { inq[to[e]] = 1; q.push(to[e]); }
-          }
-        }
-        if (q.length > 4000000) break;
-      }
-      if (dist[T] === Infinity) break;
-      let f = Infinity;
-      for (let v = T; v !== S; v = to[prev[v] ^ 1]) f = Math.min(f, cap[prev[v]]);
-      for (let v = T; v !== S; v = to[prev[v] ^ 1]) { cap[prev[v]] -= f; cap[prev[v] ^ 1] += f; }
-      total += f;
-    }
-    const F = new Float64Array(ns * nd);
-    for (let s = 0; s < ns; s++) for (let e = head[1 + s]; e >= 0; e = nxt[e]) {
-      if (e % 2 === 0 && to[e] > ns && to[e] <= ns + nd) F[s * nd + (to[e] - 1 - ns)] = cap[e ^ 1];
-    }
-    return { F, total };
-  }
+  const minCostFlow = Engine.minCostFlow; // lives in the engine so material nodes can reuse it
 
   function pack(res) {
     const ts = Engine.truckStats(res), s = res.summary;

@@ -250,6 +250,11 @@ console.log('\n17. OPTIMISER: deterministic, stale plans ignored');
   ok(Engine.simulate(sc).summary.tonneKm === noPlan, 'a stale plan is ignored, not applied');
   sc.sections[0].lengthM -= 100; sc.plan.active = false;
   ok(Engine.planStatus(sc) === 'off' && Engine.simulate(sc).summary.tonneKm !== withPlan, 'switching the plan off restores baseline dispatch');
+  // module settings are part of what a plan was made for
+  const sm = Model.exampleModules(); sm.plan = { goal: 'tonneKm', sig: Engine.sigOf(sm), active: true, arcs: [], rank: {} };
+  ok(Engine.planStatus(sm) === 'on', 'fresh plan is on');
+  sm.modules.B1.fleet = (+sm.modules.B1.fleet || 0) + 1;
+  ok(Engine.planStatus(sm) === 'stale', 'changing a module setting marks the plan stale');
 }
 
 console.log('\n18. D5 SCENARIOS: switching the module off and on keeps what was saved, and never changes results');
