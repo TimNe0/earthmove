@@ -107,7 +107,9 @@
     if (u === cur) return;
     const rho = +scn.settings.density > 0 ? +scn.settings.density : 1.8;
     const f = u === 'm3' ? 1 / rho : rho, r = v => Math.round(v * 10000) / 10000;
-    scn.sections.forEach(s => s.lines.forEach(l => (l.qty = r(+l.qty * f))));
+    const mo = scn.setup.modules || {};
+    if (mo.A1 || mo.A3) scn.sections.forEach(s => s.lines.forEach(l => (l.qty = r(+l.qty * Engine.lineFactor(scn, l, cur) / Engine.lineFactor(scn, l, u)))));  // per-material density and compaction
+    else scn.sections.forEach(s => s.lines.forEach(l => (l.qty = r(+l.qty * f))));
     scn.settings.loadTonnes = r(+scn.settings.loadTonnes * f);
     const m = scn.modules || {};
     if (m.B2 && m.B2.types) m.B2.types.forEach(t => (t.payload = r(+t.payload * f)));

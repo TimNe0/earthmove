@@ -68,8 +68,13 @@ for (let k = 0; k < 40; k++) {
   if (rnd() < 0.2) { sc = clone(sc); Model.setUnits(sc, 'm3'); }
   add('random ' + k, sc);
 }
-// the same scenarios with every A module ticked at its defaults (the engine must not react yet)
-scenarios.slice().forEach(s => add(s.name + ' + A1-A5 defaults', withMods(s.sc, A_ALL)));
+// the same scenarios with every A module ticked at neutral settings (huge lorry body, no compaction, densities equal to the site density):
+// the material layer must then reproduce the core result exactly
+scenarios.slice().forEach(s => {
+  const c = withMods(s.sc, A_ALL, { A1: { bodyM3: 1e6 } });
+  c.materials.forEach(m => { m.compaction = 1; m.bulking = 1; m.density = +c.settings.density; });
+  add(s.name + ' + A1-A5 neutral', c);
+});
 // an optimiser plan applied to both engines (its signature is recomputed per engine)
 {
   const job = Optim.create(clone(simple), 'tonneKm', { budgetMs: 1e9, maxIter: 80 });

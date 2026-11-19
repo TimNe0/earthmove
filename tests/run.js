@@ -592,6 +592,39 @@ console.log('\n33. PHASE 4 ENGINE SCAFFOLD: node arrays exist, the material laye
   ok(h(Engine.simulate(withMods(Model.exampleSimple(), { A1: true, A2: true, A3: true, A4: true, A5: true }))) === base, 'all of A1-A5 on reproduces the core hash');
 }
 
+console.log('\n34. A3 PER-MATERIAL DENSITY: m3 quantities become tonnes at each material\'s own density');
+{
+  // Site density 2.0 and a 10 m3 average load = 20 t. Cut: 24 m3 rock + 20 m3 clay. Fill: 40 m3 rock. Clay is 2.0 t/m3.
+  const mk = rockRho => {
+    const sc = tiny(); sc.settings.units = 'm3'; sc.settings.density = 2.0; sc.settings.loadTonnes = 10;
+    sc.sections[0].lines = [{ material: 'rock', qty: 24 }, { material: 'clay', qty: 20 }];
+    sc.sections[1].lines = [{ material: 'rock', qty: -40 }];
+    sc.materials = [{ id: 'rock', density: rockRho }, { id: 'clay', density: 2.0 }];
+    return withMods(Model.normalise(sc), { A3: true });
+  };
+  const a = Engine.simulate(mk(2.5)), tip = k => hhmm(a.log.tip[k]);
+  // hand: rock 24 x 2.5 = 60 t, clay 20 x 2.0 = 40 t, so 100 t cut; fill 40 x 2.5 = 100 t. 5 loads of 20 t, as test 1:
+  // loads leave 07:10, 07:20 ... 07:50 and a 1 km haul at 5 kph takes 12 min, so they tip at 07:22 ... 08:02
+  ok(a.summary.totalCut === 100 && a.summary.totalFill === 100 && a.n === 5 && a.summary.complete, 'rock 2.5: 100 t cut, 100 t fill, 5 loads, job complete');
+  ok(tip(0) === '07:22' && tip(4) === '08:02', 'hand: first tip 07:22, last tip 08:02 (sim ' + tip(0) + ', ' + tip(4) + ')');
+  const b = Engine.simulate(mk(3.0));
+  // hand: rock 24 x 3.0 = 72 t + clay 40 t = 112 t cut (5 full loads and a 12 t load = 6); fill 40 x 3.0 = 120 t, so 8 t is left unfilled
+  ok(b.summary.totalCut === 112 && b.summary.totalFill === 120 && b.n === 6 && b.summary.unfilled === 8 && !b.summary.complete, 'rock 3.0: 112 t cut, 120 t fill, 6 loads, 8 t unfilled');
+  const off = mk(3.0); off.setup.modules.A3 = false;
+  const o = Engine.simulate(off);
+  ok(o.summary.totalCut === 88 && o.summary.totalFill === 80, 'A3 off: the site density 2.0 applies to everything (88 t cut, 80 t fill)');
+  audit('A3 rock 2.5', mk(2.5));
+  // unit switch round trip at each material's density
+  const rt = mk(2.5); Model.setUnits(rt, 'tonnes');
+  ok(rt.sections[0].lines[0].qty === 60 && rt.sections[0].lines[1].qty === 40 && rt.sections[1].lines[0].qty === -100 && rt.settings.loadTonnes === 20, 'm3 to tonnes: 24 m3 rock = 60 t, 20 m3 clay = 40 t, fill -100 t, load 20 t');
+  Model.setUnits(rt, 'm3');
+  ok(rt.sections[0].lines[0].qty === 24 && rt.sections[0].lines[1].qty === 20 && rt.sections[1].lines[0].qty === -40, 'and back to m3 gives the original quantities');
+  // identity: equal densities reproduce the core result in m3
+  const h = s => crypto.createHash('sha1').update(JSON.stringify([s.log.src, s.log.dst, s.log.start, s.log.tip, s.log.t])).digest('hex').slice(0, 12);
+  const m3 = Model.exampleSimple(); Model.setUnits(m3, 'm3');
+  ok(h(Engine.simulate(withMods(m3, { A3: true }))) === h(Engine.simulate(m3)), 'A3 on with the site density equals core in m3 units');
+}
+
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
 {
   const a = Model.exampleSimple(); a.setup.level = 'custom'; a.modules.B1 = { site: { fleet: 12 }, mode: 'site' };

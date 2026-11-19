@@ -51,11 +51,23 @@
     for (const l of s.lines || []) q += +l.qty || 0;
     return q;
   }
+  // Tonnes held by one unit of a section line's quantity. Tonnes mode: 1. m3 mode: the material density (A3) or the site
+  // density, divided by the compaction factor for fill lines when A1 is on (fill is entered as compacted m3, cut as bank m3).
+  function lineFactor(scn, l, units) {
+    if ((units || scn.settings.units) !== 'm3') return 1;
+    const mods = (scn.setup && scn.setup.modules) || {}, st = scn.settings;
+    const m = (scn.materials || []).find(x => x.id === l.material);
+    const rho = mods.A3 && m && +m.density > 0 ? +m.density : (+st.density > 0 ? +st.density : 1);
+    const cf = mods.A1 && +l.qty < 0 && m && +m.compaction > 0 ? +m.compaction : 1;
+    return rho / cf;
+  }
+  const lineTonnes = (scn, l) => (+l.qty || 0) * lineFactor(scn, l);
   function prepare(scn) {
     const st = scn.settings, secs = scn.sections, n = secs.length, nn = n; // nn = sections + off-site/stockpile nodes (none yet)
     const startDay = parseISO(st.startDate);
     // Quantities are stored in the unit the user chose (settings.units) and converted to tonnes here.
     const uf = st.units === 'm3' && +st.density > 0 ? +st.density : 1;
+    const modsOn = (scn.setup && scn.setup.modules) || {}, perLine = !!(modsOn.A1 || modsOn.A3); // per-line conversion only when a material module is on
     const P = {
       n, nn, kind: new Uint8Array(nn), startDay, unitF: uf, // kind: 0 section, 1 import, 2 export, 3 stockpile
       speed: +st.speedKph, loadT: +st.loadTonnes * uf, loadMin: Math.round(+st.loadMinutes), cap: Math.floor(+st.maxMovesPerDay),
@@ -69,7 +81,7 @@
       const s = secs[i];
       P.ids.push(s.id); P.names.push(s.name);
       P.len[i] = +s.lengthM; P.chain[i] = c; P.mid[i] = c + P.len[i] / 2; c += P.len[i];
-      P.qty[i] = netQty(s) * uf;
+      P.qty[i] = perLine ? (s.lines || []).reduce((a, l) => a + lineTonnes(scn, l), 0) : netQty(s) * uf;
       const od = s.openFrom ? parseISO(s.openFrom) : null;
       P.openDay[i] = od === null ? -1e9 : od - startDay;
       P.ws[i] = hm(s.workStart); P.we[i] = hm(s.workEnd);
@@ -176,8 +188,8 @@
     mats.forEach(r => { M.acc[r.id] = {}; mats.forEach(m => (M.acc[r.id][m.id] = accept ? !!((accept[r.id] || {})[m.id]) || r.id === m.id : true)); });
     scn.sections.forEach((s, i) => {
       const lines = s.lines || [];
-      M.srcLines[i] = lines.filter(l => +l.qty > 0).map(l => ({ m: l.material, t: +l.qty * uf }));
-      M.dstLines[i] = lines.filter(l => +l.qty < 0).map(l => ({ req: l.material, needT: -l.qty * uf }));
+      M.srcLines[i] = lines.filter(l => +l.qty > 0).map(l => ({ m: l.material, t: lineTonnes(scn, l) }));
+      M.dstLines[i] = lines.filter(l => +l.qty < 0).map(l => ({ req: l.material, needT: -lineTonnes(scn, l) }));
     });
     return M;
   }
@@ -631,5 +643,5 @@
   }
   function startedBy(res, t) { return upperBound(res.log.start, t); } // log.start is non-decreasing
 
-  return { DAY, parseISO, hm, dayToISO, fmtDay, fmtClock, fmtTime, dowOf, DOW_NAMES, netQty, prepare, dist, travelMin, tripL, tripE, tripX, simulate, minCostFlow, sigOf, activePlan, planStatus, buildSeries, remainingAt, upperBound, startedBy, truckStats, trucksAt, nextActive, chartData };
+  return { DAY, parseISO, hm, dayToISO, fmtDay, fmtClock, fmtTime, dowOf, DOW_NAMES, netQty, lineFactor, lineTonnes, prepare, dist, travelMin, tripL, tripE, tripX, simulate, minCostFlow, sigOf, activePlan, planStatus, buildSeries, remainingAt, upperBound, startedBy, truckStats, trucksAt, nextActive, chartData };
 });
