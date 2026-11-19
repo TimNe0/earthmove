@@ -68,7 +68,9 @@
   function create(scn, goal, opts) {
     opts = opts || {};
     const budgetMs = opts.budgetMs || 20000, rand = rng(opts.seed || 20270111);
-    const P = Engine.prepare(scn), ids = P.ids, srcs = P.srcs, dsts = P.dsts, ns = srcs.length, nd = dsts.length;
+    const P = Engine.prepare(scn), ids = P.ids, dsts = P.dsts, nd = dsts.length;
+    const srcs = P.srcs.filter(i => P.kind[i] !== 3), ns = srcs.length; // stockpiles are not ordinary sources here: they only appear in planned routes (below)
+    const stocks = P.nodeIdx.filter(x => P.kind[x] === 3), nk = stocks.length, capK = stocks.map(x => (+P.node[x].capacityT > 0 ? +P.node[x].capacityT : 0));
     const t0 = Date.now();
     const supply = srcs.map(i => P.qty[i]), need = dsts.map(j => -P.qty[j]);
     const sum = a => a.reduce((x, y) => x + y, 0);
@@ -88,13 +90,16 @@
     const byDist = s => Array.from({ length: nd }, (_, d) => d).sort((a, b) => cost[s * nd + a] - cost[s * nd + b] || a - b);
 
     function makePlan(st) {
-      const arcs = [], rank = {};
+      const arcs = [], rank = {}, viaSK = {}, viaKD = {}, viaS = {};
+      for (const v of st.via || []) { viaSK[v.s + ':' + v.k] = (viaSK[v.s + ':' + v.k] || 0) + v.t; viaKD[v.k + ':' + v.d] = (viaKD[v.k + ':' + v.d] || 0) + v.t; viaS[v.s] = true; }
       for (let s = 0; s < ns; s++) {
-        let any = false;
+        let any = !!viaS[s];
         for (const d of st.order[s]) { const f = st.F[s * nd + d]; if (f > 1e-6) { arcs.push({ from: ids[srcs[s]], to: ids[dsts[d]], tonnes: Math.round(f * 1000) / 1000 }); any = true; } }
         if (!any) arcs.push({ from: ids[srcs[s]], to: ids[dsts[st.order[s][0]]], tonnes: 0 });
         rank[ids[srcs[s]]] = st.rank[s];
       }
+      for (const key in viaSK) { const [s, k] = key.split(':').map(Number); arcs.push({ from: ids[srcs[s]], to: ids[stocks[k]], tonnes: Math.round(viaSK[key] * 1000) / 1000 }); }   // deliberate deposit ...
+      for (const key in viaKD) { const [k, d] = key.split(':').map(Number); arcs.push({ from: ids[stocks[k]], to: ids[dsts[d]], tonnes: Math.round(viaKD[key] * 1000) / 1000 }); }   // ... and the haul out again
       return { arcs, rank };
     }
     function evaluate(st) {
@@ -111,11 +116,11 @@
       if (s === undefined || d === undefined) continue; // loads to an export gate or a stockpile are not section-to-section flows
       FA[s * nd + d] += before.log.t[k]; if (before.log.start[k] < first[s * nd + d]) first[s * nd + d] = before.log.start[k];
     }
-    const stA = { F: FA, order: [], rank: Float64Array.from(srcs, (_, s) => s) };
+    const stA = { F: FA, order: [], rank: Float64Array.from(srcs, (_, s) => s), via: [] };
     for (let s = 0; s < ns; s++) stA.order.push(byDist(s).sort((a, b) => first[s * nd + a] - first[s * nd + b]));
     // start point B: the exact lowest tonne-km flows, nearest first
     const mc = mc0 || minCostFlow(supply, need, cost);
-    const stB = { F: mc.F, order: Array.from({ length: ns }, (_, s) => byDist(s)), rank: Float64Array.from(srcs, (_, s) => s) };
+    const stB = { F: mc.F, order: Array.from({ length: ns }, (_, s) => byDist(s)), rank: Float64Array.from(srcs, (_, s) => s), via: [] };
     const eA = evaluate(stA), eB = evaluate(stB);
     let cur = eB.score < eA.score ? stB : stA, curE = eB.score < eA.score ? eB : eA;
     let best = cur, bestE = curE;
@@ -124,9 +129,20 @@
     const T0 = 0.5 * unit, T1 = 0.02 * unit;
     let lastProg = { iter: 0, evals: job.evals, frac: 0, bestScore: bestE.score, baseScore: beforeScore, startScore, bestSummary: bestE.summary };
 
-    function clone(st) { return { F: st.F.slice(), order: st.order.slice(), rank: st.rank.slice() }; }
+    function clone(st) { return { F: st.F.slice(), order: st.order.slice(), rank: st.rank.slice(), via: (st.via || []).map(v => ({ s: v.s, d: v.d, k: v.k, t: v.t })) }; }
     const loadsOf = () => Math.max(P.loadT, 1e-6) * Math.pow(2, Math.floor(rand() * 8));
     function propose(st) {
+      if (nk && rand() < 0.12) { // route part of a flow through a stockpile, or undo such a route (only drawn when the job has stockpiles)
+        const c = clone(st);
+        if (c.via.length && rand() < 0.4) { const v = c.via.splice(Math.floor(rand() * c.via.length), 1)[0]; c.F[v.s * nd + v.d] += v.t; return c; }
+        const used = []; for (let q = 0; q < ns * nd; q++) if (c.F[q] > 1e-6) used.push(q);
+        if (!used.length) return null;
+        const a = used[Math.floor(rand() * used.length)], s = Math.floor(a / nd), d = a % nd, k = Math.floor(rand() * nk);
+        const inK = c.via.reduce((x, v) => x + (v.k === k ? v.t : 0), 0), dl = Math.min(c.F[a], loadsOf(), capK[k] - inK);
+        if (dl < 1e-6) return null;
+        c.F[a] -= dl; const e = c.via.find(v => v.s === s && v.d === d && v.k === k); if (e) e.t += dl; else c.via.push({ s, d, k, t: dl });
+        return c;
+      }
       const c = clone(st), u = rand();
       const rows = new Float64Array(ns), cols = new Float64Array(nd), used = [];
       for (let s = 0; s < ns; s++) for (let d = 0; d < nd; d++) { const f = st.F[s * nd + d]; if (f > 1e-6) { rows[s] += f; cols[d] += f; used.push(s * nd + d); } }

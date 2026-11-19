@@ -13,17 +13,20 @@ STATUS: run in progress. This file is updated after every step, so it is valid e
 
 - Phase 6: D1 weather (deterministic fractional lost days, winter shutdown that wraps the year end, seeded random rain days) and D2 probabilistic dates (`src/risk.js`: seeded runs with random weather and breakdowns, 50%/80% dates for the job and every section, histogram, progress and cancel, runs in the Web Worker with an on-page fallback), the Weather & risk tab, Risk demo example, tests 51-53, browser script `drive_risk.js` (16 checks). Tags `phase6-engine-green`, then `phase6-green`.
 - Phase 7: E1 cost and E2 carbon (run counters, `Engine.costCarbon`, optimiser goals lowest cost / lowest carbon), E3 mass haul tab, E4 programme CSV, E5 section import with template and plain-English row errors, E6 planned-vs-actual with variance table and re-forecast, E7 printable report and replay mode, the m3 results-unit fix, material-coloured grains; Cost & carbon / Actual progress / Mass haul tabs, results blocks, Commercial demo example; tests 54-58; browser script `drive_commercial.js` (33 checks). Tags `e1e2-green`, `e4e5e6-green`, then `phase7-green`.
+- Optimiser stockpile planning (`stockplan-green`): plan arcs to and from stockpiles in the engine and a route-via-stockpile search move; test 59 and `drive_optimiser.js` (5 checks). See Open items for the honest limit.
 
 ## Skipped or reverted
 - **Single merged dispatcher: not adopted.** Best variant +22% (12 sections) / +7-12% (100 sections) against a 10% gate, after three attempts. Two-dispatcher rule kept. Nothing needed reverting (experiments ran on scratch copies).
 
 ## Test results per step
+- Stockpile planning: tests/run.js 534 checks all pass, tests/diff.js 181 scenarios 0 differences, drive_optimiser 5 checks pass.
 - Phase 7: tests/run.js all pass, tests/diff.js 181 scenarios 0 differences; browser: drive_commercial 33, drive_risk 16, drive_site 21, drive_materials 24, drive5 23, drive7 7 all pass; plain-job speed equal to baseline.
 - Step 0: tests/run.js all pass (289 checks), tests/diff.js 0 differences over 109 scenarios.
 - Phase 5 engine: tests/run.js all pass, tests/diff.js 0 differences over 181 scenarios (every new module ticked at neutral settings reproduces the original engine exactly); plain-job speed equal to baseline (S12 2.70-2.89 ms vs 2.73-2.80 ms).
 - Phase 5 complete: tests/run.js 432 checks pass, tests/diff.js 181 scenarios 0 differences; browser: drive_site 21, drive_materials 24, drive5 23, drive7 7 all pass.
 
 ## Open items
+- Stockpile planning is built and verified, but I could not find a case where the search chooses a stockpile route to its advantage (Materials example: improves 3 days / 14% tonne-km with no stockpile arcs). Treat it as available, not proven useful.
 - D2 breakdowns are per loading point per day, not per excavator when B5 is in 'individual machines' mode (simplification; B6 uptime is still applied separately, so a job with both counts both).
 - The greedy nearest-fill dispatcher is not monotone: a constraint can occasionally improve the result (see DECISIONS 13). Not a bug, but the optimiser may find large gains on constrained jobs.
 

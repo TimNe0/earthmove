@@ -512,7 +512,7 @@
       if (plan.rank) for (const id in plan.rank) if (idx[id] !== undefined) rank[idx[id]] = plan.rank[id];
       for (const a of plan.arcs || []) {
         const f = idx[a.from], t = idx[a.to];
-        if (f === undefined || t === undefined || !(P.qty[f] > 0) || !(P.qty[t] < 0)) continue;
+        if (f === undefined || t === undefined || !(P.qty[f] > 0 || P.kind[f] === 3) || !(P.qty[t] < 0 || P.kind[t] === 3)) continue; // a stockpile may be an arc's destination (deposit) or source (haul out)
         (arcsBySrc[f] = arcsBySrc[f] || []).push({ to: t, rem: +a.tonnes });
       }
     }
@@ -529,9 +529,10 @@
       for (let l = 0; l < dl.length; l++) if (nl[l] > EPS) { if (dl[l].req === m) return l; if (any < 0 && M.acc[dl[l].req][m]) any = l; }
       return any;
     }
-    const canTake = (j, m) => (M && M.a2 ? lineFor(j, m) >= 0 : freeNeed[j] > 0) && !(conLayers && layN[j] > 1 && layRem[j] <= EPS);
+    const canTake = (j, m) => j >= n ? P.kind[j] === 3 && stockSpace(j) > EPS : (M && M.a2 ? lineFor(j, m) >= 0 : freeNeed[j] > 0) && !(conLayers && layN[j] > 1 && layRem[j] <= EPS);
     // tonnes of m that fill j can still take (A2: limited by the line it would go into, converted by occupied space)
     function takeCap(j, m) {
+      if (j >= n) return stockSpace(j); // a planned deposit into a stockpile is limited by its room
       let c;
       if (!(M && M.a2)) c = freeNeed[j];
       else { const l = lineFor(j, m), req = M.dstLines[j][l].req; c = req === m ? needLine[j][l] : needLine[j][l] * M.occ[req] / M.occ[m]; }
@@ -663,7 +664,7 @@
           const re = closedUntil(j, day + Math.floor((departT + tr) / DAY));
           if (re) { if (re !== Infinity) { const w = (re - day) * DAY - tr - svc; if (w < minWait) minWait = w; cWait = true; } return -1; }
         }
-        if (!recv) return 0;
+        if (!recv || j >= n) return 0;
         const arr = day * DAY + departT + tr, ti = tipAt(j, arr, Math.min(capT, remSrc[i], takeCap(j, mat)));
         if (ti.ts - arr > recv.maxQ) { // queue too long: hold loading until it would be short enough
           const w = ti.mf - recv.maxQ - tr - svc - day * DAY;

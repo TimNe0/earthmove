@@ -1505,6 +1505,39 @@ console.log('\n58. E3 MASS HAUL DIAGRAM: cumulative cut minus fill along the cha
   ok(m1.now[m1.now.length - 1] === 16000 && Math.max(...m1.now.map(Math.abs)) <= Math.max(...m0.plan.map(Math.abs)), 'at the end the surplus is still +16,000 t, and no point is larger than at the start');
 }
 
+console.log('\n59. OPTIMISER STOCKPILE PLANNING: plan arcs to and from a stockpile, and a route-via-stockpile search move');
+{
+  const near = (x, y) => Math.abs(x - y) < 1e-9;
+  const occupancy = (r, x, cap) => { const ev = [], L = r.log; for (let k = 0; k < r.n; k++) { if (L.dst[k] === x) ev.push([L.tip[k], 1, L.t[k]]); if (L.src[k] === x) ev.push([L.depart[k], 0, -L.t[k]]); } ev.sort((p, q) => p[0] - q[0] || p[1] - q[1]); let o = 0, bad = 0, peak = 0; for (const e of ev) { o += e[2]; if (o > peak) peak = o; if (o < -1e-9 || o > cap + 1e-9) bad++; } return { bad, peak, end: o }; };
+  const mk = (cap, open) => { const sc = tiny(); if (open) sc.sections[1].openFrom = open; return withMods(sc, { A5: true }, { A5: { stockpiles: [{ id: 'k1', name: 'Dump', chainageM: 1000, capacityT: cap, handleCostPerT: 2, lanes: 1 }] } }); };
+  const planVia = (sc, t) => { sc.plan = { goal: 'tonneKm', sig: '', active: true, arcs: [{ from: 'a', to: 'K:k1', tonnes: t }, { from: 'K:k1', to: 'b', tonnes: t }], rank: {} }; sc.plan.sig = Engine.sigOf(sc); return sc; };
+  // hand: the fill is open, but the plan routes all 100 t through the stockpile. Monday: five deposits leave 07:10 ... 07:50 and tip 6 min later (07:16 ... 07:56).
+  // Stock is hauled out from the next day: Tuesday five loads on one lane start 07:00 ... 07:40 and tip 6 min after leaving (07:16 ... 07:56). 10 moves in all.
+  const r = audit('stockpile route in the plan', planVia(mk(100), 100)), K = 2, day = k => Math.floor(r.log.start[k] / 1440), tip = k => hhmm(r.log.tip[k]);
+  ok(r.n === 10 && r.log.dst.slice(0, 5).every(j => j === K) && r.log.src.slice(5).every(i => i === K) && r.log.dst.slice(5).every(j => j === 1), 'hand: five loads cut to stockpile, then five loads stockpile to fill');
+  ok(Array.from({ length: 5 }, (_, k) => day(k) + ' ' + tip(k)).join() === '0 07:16,0 07:26,0 07:36,0 07:46,0 07:56' && Array.from({ length: 5 }, (_, k) => day(5 + k) + ' ' + tip(5 + k)).join() === '1 07:16,1 07:26,1 07:36,1 07:46,1 07:56', 'hand: deposits tip 07:16 ... 07:56 on Monday; hauls out tip 07:16 ... 07:56 on Tuesday');
+  ok(near(r.msum.stockInT, 100) && near(r.msum.stockOutT, 100) && near(r.msum.placedT, 100) && near(r.msum.handleCost, 200) && r.summary.complete, 'hand: 100 t in, 100 t out, 100 t placed, 100 x 2 = 200 handling cost, job complete');
+  ok(r.summary.endTime > Engine.simulate(mk(100)).summary.endTime, 'direction: routing through a stockpile finishes later and costs handling than going straight to the fill');
+  // capacity: a 60 t pile never holds more than 60 t, even when the plan asks for 100 t
+  const capR = Engine.simulate(planVia(mk(60), 100)), oc = occupancy(capR, K, 60);
+  ok(oc.bad === 0 && oc.peak <= 60 + 1e-9 && capR.summary.complete, 'a 60 t stockpile holds at most 60 t at any moment, and the job still completes');
+  // a plan that does not mention the stockpile still lets it work greedily, and an empty plan does not stop it hauling out
+  const closed = mk(100, '2027-01-13'), cb = Engine.simulate(closed);
+  ok(cb.msum.stockInT > 0 && cb.summary.complete, 'a fill that opens late still uses the stockpile with no plan (unchanged behaviour)');
+  // the optimiser: never worse, deterministic, and its plan obeys the capacity
+  const o1 = runOpt(closed, 'completion', 1e9, { maxIter: 80 }), o2 = runOpt(closed, 'completion', 1e9, { maxIter: 80 });
+  ok(JSON.stringify(o1.plan) === JSON.stringify(o2.plan), 'same seed and iterations give the same plan with a stockpile present');
+  ok(o1.after.endTime <= o1.before.endTime && o1.after.placedT >= o1.before.placedT - 1e-6, 'the optimiser is never worse than the current dispatch and keeps all soil placed');
+  if (o1.plan) { const pr = audit('optimised plan with a stockpile', Object.assign({}, closed, { plan: o1.plan })); ok(occupancy(pr, K, 100).bad === 0, 'the optimised plan never overfills the stockpile'); }
+  // the search can use a stockpile route: with the cost tie-break turned into the goal (tonne-km) and a fill that is not open yet, the plan stays valid
+  const o3 = runOpt(mk(100, '2027-01-13'), 'tonneKm', 1e9, { maxIter: 120 });
+  ok(o3.after.placedT >= o3.before.placedT - 1e-6, 'the tonne-km goal with a stockpile present keeps all soil placed');
+  // the Materials example, which has a stockpile, optimises without losing soil and its plan still passes the audit
+  const ex = Model.exampleMaterials(), oe = runOpt(ex, 'tonneKm', 1e9, { maxIter: 25 });
+  ok(oe.after.placedT >= oe.before.placedT - 1e-6, 'the Materials example (with a stockpile) optimises without losing soil');
+  if (oe.plan) { const pe = Model.exampleMaterials(); pe.plan = oe.plan; audit('Materials example with an optimised plan (stockpile planning)', pe); }
+}
+
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
 {
   const a = Model.exampleSimple(); a.setup.level = 'custom'; a.modules.B1 = { site: { fleet: 12 }, mode: 'site' };
