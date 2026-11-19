@@ -70,10 +70,24 @@ for (let k = 0; k < 40; k++) {
 }
 // the same scenarios with every A module ticked at neutral settings (huge lorry body, no compaction, densities equal to the site density):
 // the material layer must then reproduce the core result exactly
-scenarios.slice().forEach(s => {
+const baseList = scenarios.slice();
+baseList.forEach(s => {
   const c = withMods(s.sc, A_ALL, { A1: { bodyM3: 1e6 } });
   c.materials.forEach(m => { m.compaction = 1; m.bulking = 1; m.density = +c.settings.density; });
   add(s.name + ' + A1-A5 neutral', c);
+});
+// Phase 5-7 modules at neutral settings (each module adds its entry here as it is built): they run through the full dispatcher
+// and must still reproduce the original engine exactly.
+const NEUTRAL = {
+  D4: { shifts: [{ start: '00:00', end: '23:59' }], replace: false, weekendSat: false, weekendSun: false, holidaysOn: false }
+};
+const NEUTRAL_ON = Object.keys(NEUTRAL).reduce((o, k) => ((o[k] = true), o), {});
+baseList.forEach(s => add(s.name + ' + C/D neutral', withMods(s.sc, NEUTRAL_ON, NEUTRAL)));
+// and everything neutral together with the material modules
+baseList.filter((_, i) => i % 3 === 0).forEach(s => {
+  const c = withMods(s.sc, Object.assign({}, A_ALL, NEUTRAL_ON), Object.assign({ A1: { bodyM3: 1e6 } }, NEUTRAL));
+  c.materials.forEach(m => { m.compaction = 1; m.bulking = 1; m.density = +c.settings.density; });
+  add(s.name + ' + A and C/D neutral', c);
 });
 // an optimiser plan applied to both engines (its signature is recomputed per engine)
 {

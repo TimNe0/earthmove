@@ -11,7 +11,7 @@
     return { id: id || 'general', name: id && id !== 'general' ? id : 'General fill', colour: '#a0855b',
              density: +(st && st.density) > 0 ? +st.density : 1.8, bulking: 1.25, compaction: 1.0 };  // compaction 1.0: ticking A1 at its defaults changes no quantity
   }
-  const MOD_IDS = ['A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6'];
+  const MOD_IDS = ['A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'C1', 'C2', 'C3', 'C4', 'C5', 'D1', 'D2', 'D3', 'D4', 'E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7'];
 
   function defaults() {
     const settings = { startDate: '2027-01-11', speedKph: 5, loadTonnes: 20, loadMinutes: 10, maxMovesPerDay: 200,
@@ -39,6 +39,21 @@
       A3: {},
       A4: { points: [] },
       A5: { stockpiles: [] },
+      // C: site constraints
+      C1: { blocks: [] },                       // [{id, name, chainageM, openDate}]
+      C2: { stretches: [] },                    // [{id, name, fromM, toM, mode:'rate'|'alternate', perHour, phaseMin}]
+      C3: { periods: [] },                      // [{id, sec:'all'|sectionId, from, to ('' = open-ended), note}]
+      C4: { layers: 3, waitDays: 2, mode: 'site', bySection: {} },
+      C5: { publicLimit: 100, internalLimit: '', publicAll: false, publicStretches: [] },   // internalLimit '' = the global daily limit
+      // D: programme and risk
+      D1: { lostDays: [5, 4, 3, 2, 1, 1, 1, 1, 2, 3, 4, 5], winterOn: false, winterFrom: '12-20', winterTo: '01-05', random: false, seed: 1 },
+      D2: { runs: 200, seed: 1, breakdownPct: 2 },
+      D3: { targets: {} },                      // {sectionId: 'yyyy-mm-dd'}
+      D4: { shifts: [{ start: '07:00', end: '19:00' }], replace: false, weekendSat: false, weekendSun: false, holidaysOn: true, holidaysAuto: true, holidays: [] },
+      // E: commercial and reporting
+      E1: { basis: 'used', lorryRate: 45, excavatorRate: 70, receivingRate: 55, fuelPrice: 1.45, labourRate: 28 },
+      E2: { lorryLPerHour: 25, excavatorLPerHour: 30, receivingLPerHour: 18, kgCO2PerLitre: 2.68 },
+      E3: {}, E4: { dateFormat: 'uk', idPrefix: 'EW' }, E5: {}, E6: { actuals: [], asOf: '' }, E7: { title: 'Earthmove summary' },
       B1: { fleet: 60, depotOn: false, depotM: 0, depotLeave: '07:00' },
       B2: { types: [{ id: 'ty1', name: 'Standard lorry', payload: ld, speedLoaded: spd, speedEmpty: spd, qty: 60, publicRoad: true }] },
       B3: { loadedKph: spd, emptyKph: Math.round(spd * 1.2 * 10) / 10, mode: 'site', bySection: {} },
@@ -218,6 +233,22 @@
           if (!pos(x.capacityT)) add('error', nm + ': the capacity must be more than 0 tonnes.', mc(x.id + ':capacityT'));
           if (!(+x.handleCostPerT >= 0)) add('error', nm + ': the double-handling cost cannot be negative.', mc(x.id + ':handleCostPerT'));
         }
+      });
+    } else if (id === 'D4') {
+      const sh = m.shifts || [];
+      sh.forEach((x, k) => {
+        const a = Engine.hm(x.start), b = Engine.hm(x.end), nm = 'Shift ' + (k + 1);
+        if (a === null || b === null) add('error', nm + ': the start or finish is not a valid time.', mc('shift' + k));
+        else if (a >= b) add('error', nm + ': it finishes before it starts. A shift cannot run past midnight, so split it into two.', mc('shift' + k));
+      });
+      const ok = sh.map(x => [Engine.hm(x.start), Engine.hm(x.end)]).filter(x => x[0] !== null && x[1] !== null && x[0] < x[1]).sort((p, q) => p[0] - q[0]);
+      for (let q = 1; q < ok.length; q++) if (ok[q][0] < ok[q - 1][1]) add('warn', 'Two shifts overlap, so they are treated as one continuous shift.', mc('shift0'));
+      if (!sh.length) add('warn', 'No shifts are listed, so each section keeps its own working hours.', mc('shift0'));
+      if (m.holidaysAuto === false) (m.holidays || []).forEach((h, k) => { if (Engine.parseISO(h.date) === null) add('error', 'Holiday ' + (k + 1) + ' is not a valid date.', mc('holiday' + k)); });
+      if (ok.length && !m.replace) scn.sections.forEach(s => {
+        if (!(Engine.netQty(s) > 0)) return;
+        const a = Engine.hm(s.workStart), b = Engine.hm(s.workEnd);
+        if (a !== null && b !== null && !ok.some(x => Math.max(x[0], a) < Math.min(x[1], b))) add('warn', (s.name || 'A section') + ': its working hours do not overlap any shift, so no loads can start there.', { sec: s.id, field: 'workStart' });
       });
     } else if (id === 'B6') {
       [['lorries', 'Lorry'], ['excavators', 'Excavator'], ['receiving', 'Receiving plant']].forEach(([k, nm]) => {

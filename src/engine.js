@@ -69,6 +69,57 @@
     if (mods.A5) for (const r of (md.A5 || {}).stockpiles || []) out.push({ kind: 3, ref: r, id: 'K:' + r.id });
     return out;
   }
+  // ---------- calendar (D4): bank holidays, shift windows, weekend working ----------
+  // England and Wales bank holidays by rule: New Year, Good Friday, Easter Monday, early May, spring and summer bank holidays,
+  // Christmas Day and Boxing Day. A holiday that falls on a weekend moves to the next weekday.
+  function easterSunday(y) { // Gregorian computus (anonymous algorithm)
+    const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
+    const h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+    const mo = Math.floor((h + l - 7 * m + 114) / 31), da = (h + l - 7 * m + 114) % 31 + 1;
+    return Date.UTC(y, mo - 1, da);
+  }
+  function ukHolidays(y) {
+    const D = 86400000, iso = t => new Date(t).toISOString().slice(0, 10), wd = t => new Date(t).getUTCDay(); // 0 Sunday
+    const nextWeekday = t => { while (wd(t) === 0 || wd(t) === 6) t += D; return t; };
+    const firstMon = (m) => { let t = Date.UTC(y, m, 1); while (wd(t) !== 1) t += D; return t; };
+    const lastMon = (m) => { let t = Date.UTC(y, m + 1, 0); while (wd(t) !== 1) t -= D; return t; };
+    const easter = easterSunday(y), out = [];
+    out.push({ date: iso(nextWeekday(Date.UTC(y, 0, 1))), name: 'New Year’s Day' });
+    out.push({ date: iso(easter - 2 * D), name: 'Good Friday' }, { date: iso(easter + D), name: 'Easter Monday' });
+    out.push({ date: iso(firstMon(4)), name: 'Early May bank holiday' }, { date: iso(lastMon(4)), name: 'Spring bank holiday' }, { date: iso(lastMon(7)), name: 'Summer bank holiday' });
+    const xmas = Date.UTC(y, 11, 25), box = Date.UTC(y, 11, 26), cx = nextWeekday(xmas);
+    out.push({ date: iso(cx), name: 'Christmas Day' + (cx !== xmas ? ' (substitute)' : '') });
+    let bx = nextWeekday(box); if (bx === cx) bx = nextWeekday(cx + D); out.push({ date: iso(bx), name: 'Boxing Day' + (bx !== box ? ' (substitute)' : '') });
+    return out;
+  }
+  // The holiday list in force: the editable list, or (while it is still on automatic) the rule-based list for ten years from the start date.
+  function holidayList(scn) {
+    const b = (scn.modules || {}).D4 || {};
+    if (b.holidaysAuto === false && Array.isArray(b.holidays)) return b.holidays;
+    const y0 = parseInt(String((scn.settings || {}).startDate).slice(0, 4), 10) || 2027, out = [];
+    for (let y = y0; y < y0 + 10; y++) out.push(...ukHolidays(y));
+    return out;
+  }
+  // Shift windows, weekend working and holidays. Windows are intersected with each section's own hours (or replace them when asked);
+  // a section keeps its first start and last end in P.ws/P.we, and its inner gaps in cal.win. Weekend flags only ADD working days.
+  function snapWin(w, t) { for (let k = 0; k < w.length; k++) if (t < w[k][1]) return t > w[k][0] ? t : w[k][0]; return Infinity; } // earliest allowed start at or after t, or Infinity
+  function applyCalendar(scn, P) {
+    const mods = (scn.setup && scn.setup.modules) || {}, md = scn.modules || {};
+    if (!mods.D4) return;
+    const cal = { dayOff: new Uint8Array(3700), win: [], multi: false }, b = md.D4 || {};
+    const shifts = (b.shifts || []).map(x => [hm(x.start), hm(x.end)]).filter(x => x[0] !== null && x[1] !== null && x[0] < x[1]).sort((p, q) => p[0] - q[0]);
+    for (let i = 0; i < P.n; i++) {
+      if (shifts.length) {
+        const base = b.replace ? [0, 1440] : [P.ws[i], P.we[i]], w = [];
+        for (const sh of shifts) { const a = Math.max(sh[0], base[0]), e = Math.min(sh[1], base[1]); if (a < e) { if (w.length && a <= w[w.length - 1][1]) w[w.length - 1][1] = Math.max(w[w.length - 1][1], e); else w.push([a, e]); } }
+        if (!w.length) { P.ws[i] = 0; P.we[i] = 0; } else { P.ws[i] = w[0][0]; P.we[i] = w[w.length - 1][1]; if (w.length > 1) { cal.win[i] = w; cal.multi = true; } }
+      }
+      if (b.weekendSat) P.workDays[i][5] = true;
+      if (b.weekendSun) P.workDays[i][6] = true;
+    }
+    if (b.holidaysOn !== false) for (const h of holidayList(scn)) { const dn = parseISO(h.date); if (dn === null) continue; const k = dn - P.startDay; if (k >= 0 && k < cal.dayOff.length) cal.dayOff[k] = 1; }
+    P.cal = cal;
+  }
   function prepare(scn) {
     const st = scn.settings, secs = scn.sections, n = secs.length;
     const nodeDefs = nodeDefsOf(scn), nn = n + nodeDefs.length; // nn = sections + nodes
@@ -82,7 +133,7 @@
       ids: [], names: [],
       len: new Float64Array(nn), chain: new Float64Array(nn), mid: new Float64Array(nn), qty: new Float64Array(nn),
       openDay: new Float64Array(nn), ws: new Int32Array(nn), we: new Int32Array(nn), loaders: new Int32Array(nn),
-      workDays: [], total: 0, srcs: [], dsts: [], destOrder: [], node: [], nodeIdx: []
+      workDays: [], total: 0, srcs: [], dsts: [], destOrder: [], node: [], nodeIdx: [], cal: null
     };
     let c = 0;
     for (let i = 0; i < n; i++) {
@@ -99,6 +150,7 @@
       else if (P.qty[i] < 0) P.dsts.push(i);
     }
     P.total = c;
+    applyCalendar(scn, P);
     nodeDefs.forEach((nd, k) => {
       const x = n + k, r = nd.ref, a = hm(r.workStart), b = hm(r.workEnd);
       P.kind[x] = nd.kind; P.node[x] = r; P.nodeIdx.push(x);
@@ -110,6 +162,7 @@
       if (nd.kind === 1 || nd.kind === 3) P.srcs.push(x);
     });
     P.cfg = buildCfg(scn, P, uf);
+    P.cfg.full = !!(P.cfg.mat || P.cal); // jobs that use a module only the full dispatcher knows
     // per-source destination list, nearest first (ties by section order)
     for (const i of P.srcs) {
       P.destOrder[i] = P.dsts.slice().sort((a, b) => Math.abs(P.mid[a] - P.mid[i]) - Math.abs(P.mid[b] - P.mid[i]) || a - b);
@@ -295,7 +348,8 @@
   // A source that has arcs only sends along them (an arc of 0 t means "send nothing").
   // `sig` fingerprints the inputs the plan was made for, so a stale plan is never silently applied.
   function sigOf(scn) {
-    const str = JSON.stringify([scn.settings, scn.setup && scn.setup.modules, scn.modules, scn.materials, scn.sections.map(s => [s.id, +s.lengthM, Math.round(netQty(s) * 1e6) / 1e6, s.workStart, s.workEnd, s.openFrom || '', +s.maxLoaders, (s.workDays || []).map(Number).join('')])]);
+    const skip = { D2: 1, D3: 1, E1: 1, E2: 1, E3: 1, E4: 1, E5: 1, E6: 1, E7: 1 }, only = o => { const r = {}; for (const k in o || {}) if (!skip[k]) r[k] = o[k]; return r; }; // settings that cannot change dispatch never stale a plan
+    const str = JSON.stringify([scn.settings, only(scn.setup && scn.setup.modules), only(scn.modules), scn.materials, scn.sections.map(s => [s.id, +s.lengthM, Math.round(netQty(s) * 1e6) / 1e6, s.workStart, s.workEnd, s.openFrom || '', +s.maxLoaders, (s.workDays || []).map(Number).join('')])]);
     let h = 5381;
     for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
     return (h >>> 0).toString(16) + '-' + str.length;
@@ -312,12 +366,16 @@
   function simulate(scn, opts) {
     opts = opts || {};
     const P = opts.P || prepare(scn);
-    return (P.cfg.mat ? simulateFull : simulateCore)(scn, opts.P ? opts : Object.assign({}, opts, { P }));
+    return (P.cfg.full ? simulateFull : simulateCore)(scn, opts.P ? opts : Object.assign({}, opts, { P }));
   }
 
   function simulateFull(scn, opts) {
     opts = opts || {};
     const P = opts.P || prepare(scn), n = P.n, nn = P.nn, cfg = P.cfg; // node-indexed arrays use nn; section loops stop at n
+    // calendar (D4): days off for the whole site, shift windows with gaps
+    const cal = P.cal, dayOff = cal ? cal.dayOff : null, winMulti = !!(cal && cal.multi);
+    let idleWork = -1; // working days since the last movement (days off do not count), for stuck detection
+    const works = (i, d, dow) => P.workDays[i][dow]; // does source i work on day d (weekday dow)?
     const plan = opts.plan !== undefined ? opts.plan : activePlan(scn);
     const noLog = !!opts.noLog;
     const horizon = opts.horizonDays || 3650;
@@ -531,6 +589,7 @@
         for (let k = 1; k < sl.length; k++) if (sl[k] < sl[mi]) mi = k;
         let mt = sl[mi];
         if (fleetOn) { const r = rdyT[i] - base; if (r > mt) mt = r; } // no lorry back yet (cached bound, checked below)
+        if (winMulti && cal.win[i]) mt = snapWin(cal.win[i], mt); // a start in a gap between shifts waits for the next shift
         if (mt >= P.we[i]) { blocked[i] = 1; continue; }
         if (mt < bestT || (mt === bestT && rank[i] < rank[best])) { bestT = mt; best = i; bestSlot = mi; bestSlotT = sl[mi]; }
       }
@@ -538,7 +597,9 @@
     }
     for (d = 0; d < horizon; d++) {
       if (totalRem <= EPS && !(hasImp && P.srcs.some(x => x >= n && remSrc[x] > EPS) && P.dsts.some(j => freeNeed[j] > EPS))) break;
-      if (d > maxOpen + 14 && d - lastMove > 14) { stuck = true; break; }
+      if (dayOff && dayOff[d]) continue; // a day off for the whole site: nothing loads, and it is not an idle working day
+      idleWork++;
+      if (d > maxOpen + 14 && idleWork > 14) { stuck = true; break; }
       const dow = dowOf(P.startDay + d);
       const base = d * DAY;
       if (fleetOn && cfg.depot) { // overnight every lorry is back at the depot, and leaves it at the set time
@@ -559,8 +620,8 @@
         });
         for (const i of P.srcs) {
           rates[i] = null;
-          if (i >= n) { if (remSrc[i] > 0 && P.workDays[i][dow]) { slots[i].fill(P.ws[i]); active.push(i); blocked[i] = 0; } continue; } // import gates load on their own
-          if (!(remSrc[i] > 0 && P.workDays[i][dow]) || !per[i]) continue;
+          if (i >= n) { if (remSrc[i] > 0 && works(i, d, dow)) { slots[i].fill(P.ws[i]); active.push(i); blocked[i] = 0; } continue; } // import gates load on their own
+          if (!(remSrc[i] > 0 && works(i, d, dow)) || !per[i]) continue;
           const ks = per[i], sl = new Int32Array(ks.length), rt = new Float64Array(ks.length);
           ks.forEach((k, q) => {
             rt[q] = exc.machines[k].rate;
@@ -570,7 +631,7 @@
           slots[i] = sl; rates[i] = rt; active.push(i); blocked[i] = 0;
         }
       } else {
-        for (const i of P.srcs) if (remSrc[i] > 0 && P.workDays[i][dow]) active.push(i);
+        for (const i of P.srcs) if (remSrc[i] > 0 && works(i, d, dow)) active.push(i);
         for (const i of active) { slots[i].fill(P.ws[i]); blocked[i] = 0; }
       }
       if (!active.length) continue;
@@ -660,7 +721,7 @@
         if (tipAbs > lastTip[j]) lastTip[j] = tipAbs;
         if (tipAbs > endTime) endTime = tipAbs;
         moves++; tonnesMoved += tonnes; tonneKm += tonnes * dist(P, best, j) / 1000;
-        used++; lastMove = d;
+        used++; lastMove = d; idleWork = 0;
         if (firstDay < 0) firstDay = d;
         lastDay = d;
         daily[d] = used;
@@ -678,7 +739,7 @@
       for (let k = firstDay; k <= lastDay; k++) {
         const dow = dowOf(P.startDay + k);
         let any = false;
-        for (const i of P.srcs) if (P.workDays[i][dow]) { any = true; break; }
+        if (!(dayOff && dayOff[k])) for (const i of P.srcs) if (works(i, k, dow)) { any = true; break; }
         if (any) { span++; if (!daily[k]) idle++; }
       }
     }
@@ -1105,5 +1166,5 @@
   }
   function startedBy(res, t) { return upperBound(res.log.start, t); } // log.start is non-decreasing
 
-  return { DAY, parseISO, hm, dayToISO, fmtDay, fmtClock, fmtTime, dowOf, DOW_NAMES, netQty, lineFactor, lineTonnes, prepare, dist, travelMin, tripL, tripE, tripX, simulate, minCostFlow, sigOf, activePlan, planStatus, buildSeries, remainingAt, upperBound, startedBy, truckStats, trucksAt, nextActive, chartData };
+  return { ukHolidays, holidayList, DAY, parseISO, hm, dayToISO, fmtDay, fmtClock, fmtTime, dowOf, DOW_NAMES, netQty, lineFactor, lineTonnes, prepare, dist, travelMin, tripL, tripE, tripX, simulate, minCostFlow, sigOf, activePlan, planStatus, buildSeries, remainingAt, upperBound, startedBy, truckStats, trucksAt, nextActive, chartData };
 });

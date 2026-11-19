@@ -90,6 +90,10 @@ function audit(name, scn) {
     if (L.t[k] > maxPay + 1e-9 || L.t[k] <= 0) bad++;
     if (P.kind[i] === 1) { if (L.depart[k] - L.start[k] !== Math.max(1, Math.round(+P.node[i].roundTripMin || 0))) bad++; } // an import gate: loading takes the supplier round trip
     else if (!P.cfg.exc && P.cfg.uExc === 1 && L.depart[k] - L.start[k] !== P.loadMin) bad++;
+    if (P.cal) { // calendar (D4): never on a day off, and inside one of the section's shift windows
+      if (P.cal.dayOff[day]) bad++;
+      const w = i < P.n ? P.cal.win[i] : null; if (w && !w.some(x => tod >= x[0] && tod < x[1])) bad++;
+    }
     perDay[day] = (perDay[day] || 0) + 1;
     (slotEvents[i] = slotEvents[i] || []).push([L.start[k], 1], [L.depart[k], -1]);
   }
@@ -933,6 +937,57 @@ console.log('\n41. A1 AND A3 AT THEIR DEFAULTS CHANGE NO QUANTITY (Standard leve
     ok(hashOf(a) === hashOf(b), u + ': the movement log is identical with A1 and A3 on');
   });
   ok(Model.defaultMaterial({ density: 1.8 }).compaction === 1, 'a new material has compaction 1.0');
+}
+
+console.log('\n42. D4 CALENDAR: shifts, bank holidays (computed by rule), weekend working');
+{
+  const days = r => Array.from({ length: r.n }, (_, k) => Math.floor(r.log.start[k] / 1440)).join();
+  const d4 = (params, over) => { const sc = tiny(over); return withMods(sc, { D4: true }, { D4: Object.assign({ holidaysOn: false }, params) }); };
+  // UK bank holidays by rule, checked against an independent calculation
+  const hd = y => Engine.ukHolidays(y).map(h => h.date.slice(5)).join(' ');
+  ok(hd(2027) === '01-01 03-26 03-29 05-03 05-31 08-30 12-27 12-28', '2027: 1 Jan, Good Friday 26 Mar, Easter Monday 29 Mar, 3 May, 31 May, 30 Aug, and Christmas/Boxing Day substitutes 27 and 28 Dec');
+  ok(hd(2028) === '01-03 04-14 04-17 05-01 05-29 08-28 12-25 12-26', '2028: New Year substitute 3 Jan (1 Jan is a Sunday), Easter 14/17 Apr, Christmas and Boxing Day on weekdays');
+  // hand: cap 3 a day. Mon loads 1-3 start 07:00, 07:10, 07:20 and tip 07:22, 07:32, 07:42; Tuesday is a holiday; Wednesday loads 4 and 5 tip 07:22 and 07:32.
+  const cap3 = o => { const sc = d4(o); sc.settings.maxMovesPerDay = 3; return sc; };
+  const plain = Engine.simulate((() => { const x = tiny(); x.settings.maxMovesPerDay = 3; return x; })());
+  ok(days(plain) === '0,0,0,1,1', 'core with a cap of 3 a day: Monday 3, Tuesday 2');
+  const hol = audit('D4 holiday on Tuesday', cap3({ holidaysOn: true, holidaysAuto: false, holidays: [{ date: '2027-01-12', name: 'Test holiday' }] }));
+  ok(days(hol) === '0,0,0,2,2' && hhmm(hol.log.tip[4]) === '07:32' && hol.summary.endTime === 2 * 1440 + 7 * 60 + 32, 'hand: Tuesday off, so loads 4 and 5 move to Wednesday and the last tip is Wed 07:32');
+  ok(hol.summary.idleDays === 0 && hol.summary.workingSpan === 2, 'a holiday is not an idle working day (span 2 working days, 0 idle)');
+  // a 35-day shutdown is not mistaken for a stuck job (idle days are counted over working days)
+  const hols = []; for (let k = 0; k < 35; k++) hols.push({ date: new Date(Date.UTC(2027, 0, 12 + k)).toISOString().slice(0, 10), name: 'shutdown' });
+  const sd = Engine.simulate(cap3({ holidaysOn: true, holidaysAuto: false, holidays: hols }));
+  ok(!sd.summary.stuck && sd.summary.complete && Math.floor(sd.log.start[4] / 1440) === 36, 'a 35-day shutdown (days 1-35, 12 Jan to 15 Feb): not stuck, and the last loads resume on day 36 (Tue 16 Feb)');
+  // weekend working adds days: start Friday 15 Jan, cap 3
+  const fri = o => { const sc = d4(o, { settings: Object.assign({}, tiny().settings, { startDate: '2027-01-15', maxMovesPerDay: 3 }) }); return sc; };
+  const frCore = Engine.simulate((() => { const x = tiny({ settings: Object.assign({}, tiny().settings, { startDate: '2027-01-15', maxMovesPerDay: 3 }) }); return x; })());
+  ok(days(frCore) === '0,0,0,3,3', 'core, start Friday, cap 3: Friday 3, then Monday 2 (day 3)');
+  const sat = audit('D4 Saturday working', fri({ weekendSat: true }));
+  ok(days(sat) === '0,0,0,1,1', 'with Saturday working the last two loads move to Saturday (day 1)');
+  const sun = Engine.simulate(fri({ weekendSat: true, weekendSun: true }));
+  ok(days(sun) === '0,0,0,1,1', 'Sunday working changes nothing once Saturday is already worked');
+  // weekend flags only add: a section that already works Saturdays keeps them
+  const sec = tiny(); sec.sections[0].workDays = [1, 1, 1, 1, 1, 1, 0]; const kept = withMods(sec, { D4: true }, { D4: { holidaysOn: false, weekendSat: false } });
+  ok(Engine.prepare(kept).workDays[0][5] === true, 'weekend working off never removes a Saturday the section already works');
+  // shifts: 07:00-07:30 and 13:00-19:00. Loads 1-3 start 07:00, 07:10, 07:20; at 07:30 the window is closed, so loads 4 and 5 start 13:00 and 13:10.
+  const sh = audit('D4 split shift', d4({ shifts: [{ start: '07:00', end: '07:30' }, { start: '13:00', end: '19:00' }] }));
+  ok(Array.from({ length: 5 }, (_, k) => hhmm(sh.log.start[k])).join() === '07:00,07:10,07:20,13:00,13:10' && hhmm(sh.log.tip[4]) === '13:32', 'hand: starts 07:00, 07:10, 07:20, then the second shift 13:00, 13:10; last tip 13:32');
+  // shifts intersect a section's own hours by default, and replace them when asked
+  const wide = { shifts: [{ start: '06:00', end: '20:00' }] };
+  ok(hhmm(Engine.simulate(d4(wide)).log.start[0]) === '07:00', 'a wider shift cannot extend a section’s own hours (first load still 07:00)');
+  ok(hhmm(Engine.simulate(d4(Object.assign({ replace: true }, wide))).log.start[0]) === '06:00', 'with "replace section hours" the shift rules (first load 06:00)');
+  // default (automatic) UK holidays slow a job that spans Easter: start Wed 24 Mar 2027, cap 2 a day
+  const easter = o => { const sc = tiny({ settings: Object.assign({}, tiny().settings, { startDate: '2027-03-24', maxMovesPerDay: 2 }) }); return o ? withMods(sc, { D4: true }, { D4: {} }) : sc; };
+  const e0 = Engine.simulate(easter(false)), e1 = audit('D4 over Easter 2027', easter(true));
+  // hand: Wed 2, Thu 2, then Fri 26 Mar (Good Friday), the weekend and Mon 29 Mar (Easter Monday) are off, so load 5 is on Tue 30 Mar (day 6)
+  ok(days(e0) === '0,0,1,1,2' && days(e1) === '0,0,1,1,6', 'hand: without D4 the fifth load is Friday (day 2); with the default holidays it is Tuesday 30 Mar (day 6)');
+  ok(e1.summary.endTime > e0.summary.endTime, 'direction: bank holidays make the programme later');
+  // switching it on at neutral settings changes nothing (exampleSimple, holidays off)
+  const hashOf = s => crypto.createHash('sha1').update(JSON.stringify([s.log.src, s.log.dst, s.log.start, s.log.tip, s.log.t])).digest('hex').slice(0, 12);
+  ok(hashOf(Engine.simulate(withMods(Model.exampleSimple(), { D4: true }, { D4: { holidaysOn: false } }))) === hashOf(Engine.simulate(Model.exampleSimple())), 'D4 at neutral settings reproduces the core result on the 12-section example');
+  // validation
+  const bad = d4({ shifts: [{ start: '19:00', end: '07:00' }] });
+  ok(Model.validate(bad).some(x => x.level === 'error' && /cannot run past midnight/.test(x.text) && x.cell && x.cell.mod === 'D4'), 'a shift that crosses midnight is rejected in plain English');
 }
 
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
