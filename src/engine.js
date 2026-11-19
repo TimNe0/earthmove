@@ -105,7 +105,7 @@
   // ---------- site constraints (C1-C5) ----------
   // Built once in prepare. P.con exists only when some constraint is actually in force, so neutral settings run the untouched path.
   function applyConstraints(scn, P) {
-    const mods = (scn.setup && scn.setup.modules) || {}, md = scn.modules || {}, con = { closed: null, maxDay: 0 };
+    const mods = (scn.setup && scn.setup.modules) || {}, md = scn.modules || {}, con = { closed: null, blocks: null, maxDay: 0 };
     const idx = {}; for (let i = 0; i < P.n; i++) idx[P.ids[i]] = i;
     if (mods.C3) { // closed periods per section (or all sections); 'to' blank = closed for good
       const closed = [];
@@ -118,7 +118,16 @@
       }
       if (closed.some(Boolean)) con.closed = closed;
     }
-    P.con = con.closed ? con : null;
+    if (mods.C1) { // blockages: nothing passes this chainage before its opening date
+      const blocks = [];
+      for (const b of (md.C1 || {}).blocks || []) {
+        const dn = parseISO(b.openDate); if (dn === null || !(+b.chainageM >= 0)) continue;
+        blocks.push({ x: +b.chainageM, openAbs: (dn - P.startDay) * DAY });
+        if (blocks[blocks.length - 1].openAbs / DAY + 1 > con.maxDay) con.maxDay = blocks[blocks.length - 1].openAbs / DAY + 1;
+      }
+      if (blocks.length) con.blocks = blocks;
+    }
+    P.con = con.closed || con.blocks ? con : null;
   }
   function snapWin(w, t) { for (let k = 0; k < w.length; k++) if (t < w[k][1]) return t > w[k][0] ? t : w[k][0]; return Infinity; } // earliest allowed start at or after t, or Infinity
   function applyCalendar(scn, P) {
@@ -236,7 +245,7 @@
     };
     c.types = defs.map(d => {
       const t = { name: d.name, payload: d.payload, qty: d.qty, body: d.body };
-      if (!c.simple) { const l = cum(d.vL, gL), e = cum(d.vE, gE); t.cumL = l.mid; t.cumE = e.mid; t.eStart = e.start; t.eMpm = e.mpm; }
+      if (!c.simple) { const l = cum(d.vL, gL), e = cum(d.vE, gE); t.cumL = l.mid; t.cumE = e.mid; t.eStart = e.start; t.eMpm = e.mpm; t.lStart = l.start; t.lMpm = l.mpm; }
       return t;
     });
     // B1 option: lorries go back to a depot at the end of each day and leave it at a set time next morning
@@ -320,6 +329,13 @@
     while (lo < hi) { const m = (lo + hi + 1) >> 1; if (P.chain[m] <= x) lo = m; else hi = m - 1; }
     return Math.round(Math.abs(t.cumE[i] - (t.eStart[lo] + (x - P.chain[lo]) * t.eMpm[lo])) + 1e-9);
   };
+  // loaded travel minutes from node i to chainage x (used for blockages and lane stretches)
+  const tripLx = (P, t, i, x) => {
+    if (P.cfg.simple) return Math.round(Math.abs(x - P.mid[i]) / 1000 / P.speed * 60);
+    let lo = 0, hi = P.n - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (P.chain[m] <= x) lo = m; else hi = m - 1; }
+    return Math.round(Math.abs(t.cumL[i] - (t.lStart[lo] + (x - P.chain[lo]) * t.lMpm[lo])) + 1e-9);
+  };
   const tripE = (P, t, i, j) => (P.cfg.simple ? travelMin(P, i, j) : Math.round(Math.abs(t.cumE[j] - t.cumE[i]) + 1e-9));
 
   // Exact minimum tonne-km flow (transportation problem) by successive shortest paths.
@@ -394,7 +410,19 @@
     // calendar (D4): days off for the whole site, shift windows with gaps
     const cal = P.cal, dayOff = cal ? cal.dayOff : null, winMulti = !!(cal && cal.multi);
     let idleWork = -1; // working days since the last movement (days off do not count), for stuck detection
-    const con = P.con, conClosed = !!(con && con.closed);
+    const con = P.con, conClosed = !!(con && con.closed), conBlocks = con && con.blocks;
+    // route blockages (C1): would a load leaving i for j (departing at departT on `day`) reach a blockage before it opens?
+    // Returns the earliest loading start (relative to the day) that would pass every blockage, or null when it can go now.
+    function blockWait(i, j, day, departT, ty, svc) {
+      let lo = P.mid[i], hi = P.mid[j], w = null;
+      if (lo > hi) { const t = lo; lo = hi; hi = t; }
+      for (const b of conBlocks) {
+        if (b.x <= lo || b.x >= hi) continue;
+        const tx = tripLx(P, ty, i, b.x);
+        if (day * DAY + departT + tx < b.openAbs) { const need = b.openAbs - day * DAY - tx - svc; if (w === null || need > w) w = need; }
+      }
+      return w;
+    }
     // closed periods (C3): is section i closed on day d, and if so on which day does it open again (Infinity = never)?
     const closedUntil = (i, d) => { const r = conClosed ? con.closed[i] : null; if (r) for (let k = 0; k < r.length; k++) if (d >= r[k][0] && d < r[k][1]) return r[k][1]; return 0; };
     const works = (i, d, dow) => P.workDays[i][dow] && !(conClosed && closedUntil(i, d)); // does source i work on day d (weekday dow)?
@@ -445,16 +473,17 @@
     const nodeAvail = (x, day) => { if (nodeDay[x] !== day) { nodeDay[x] = day; nodeUsed[x] = 0; } return (+P.node[x].dailyT > 0 ? +P.node[x].dailyT : Infinity) - nodeUsed[x]; };
     const exportsList = P.nodeIdx.filter(x => P.kind[x] === 2);
     // Nearest export that takes material m and still has room today (A4). full = an accepting export exists but is full today.
-    function pickExport(i, m, day) {
-      let bx = -1, bd = Infinity, full = false;
+    function pickExport(i, m, day, departT, ty, svc) {
+      let bx = -1, bd = Infinity, full = false, wait = null;
       for (const x of exportsList) {
         const acc = P.node[x].accepts || [];
         if (acc.length && acc.indexOf(m) < 0) continue;
         if (nodeAvail(x, day) <= EPS) { full = true; continue; }
+        if (conBlocks) { const bw = blockWait(i, x, day, departT, ty, svc); if (bw !== null) { if (wait === null || bw < wait) wait = bw; continue; } } // across a blockage that is still closed
         const dd = Math.abs(P.mid[i] - P.mid[x]);
         if (dd < bd) { bd = dd; bx = x; }
       }
-      return { x: bx, full };
+      return { x: bx, full, wait };
     }
     const anyNeed = m => P.dsts.some(j => canTake(j, m));
     // A5: stockpiles. stock[x][mi] = tonnes that can be hauled out again (available from the day after they arrive),
@@ -465,9 +494,9 @@
     const stockIn = new Float64Array(nn), stockOut = new Float64Array(nn);
     let placedT = 0, handleCost = 0, parkedT = 0;
     const stockSpace = x => (+P.node[x].capacityT > 0 ? +P.node[x].capacityT : 0) - stockTot[x];
-    function pickStock(i) { // nearest stockpile with room
+    function pickStock(i, day, departT, ty, svc) { // nearest stockpile with room
       let bx = -1, bd = Infinity;
-      for (const x of stockList) { if (stockSpace(x) <= EPS) continue; const dd = Math.abs(P.mid[i] - P.mid[x]); if (dd < bd) { bd = dd; bx = x; } }
+      for (const x of stockList) { if (stockSpace(x) <= EPS) continue; if (conBlocks && blockWait(i, x, day, departT, ty, svc) !== null) continue; const dd = Math.abs(P.mid[i] - P.mid[x]); if (dd < bd) { bd = dd; bx = x; } }
       return bx;
     }
     const ordCache = {}, ptrCache = {};
@@ -510,7 +539,11 @@
       let bk = -1, bt = Infinity, bp = -1;
       for (let k = 0; k < nL; k++) {
         const t = types[lType[k]];
-        const r = lFree[k] + (lLoc[k] === -1 ? 0 : lLoc[k] === DEPOT ? tripX(P, t, cfg.depot.x, i) : tripE(P, t, lLoc[k], i));
+        let r = lFree[k] + (lLoc[k] === -1 ? 0 : lLoc[k] === DEPOT ? tripX(P, t, cfg.depot.x, i) : tripE(P, t, lLoc[k], i));
+        if (conBlocks && lLoc[k] !== -1) { // an empty lorry cannot pass a blockage that is still closed either
+          let lo = lLoc[k] === DEPOT ? cfg.depot.x : P.mid[lLoc[k]], hi = P.mid[i]; if (lo > hi) { const q = lo; lo = hi; hi = q; }
+          for (const bl of conBlocks) if (bl.x > lo && bl.x < hi && r < bl.openAbs) r = bl.openAbs;
+        }
         if (r < bt || (r === bt && t.payload > bp)) { bt = r; bk = k; bp = t.payload; }
       }
       rdyK[i] = bk; rdyT[i] = bt; rdyStale[i] = 0;
@@ -548,6 +581,7 @@
           if (w < minWait) minWait = w;
           return -1;
         }
+        if (conBlocks) { const bw = blockWait(i, j, day, departT, ty, svc); if (bw !== null) { if (bw < minWait) minWait = bw; cWait = true; return -1; } }
         if (conClosed) { // the fill is in a closed period on the day the load would arrive: it waits for the reopening day
           const re = closedUntil(j, day + Math.floor((departT + tr) / DAY));
           if (re) { if (re !== Infinity) { const w = (re - day) * DAY - tr - svc; if (w < minWait) minWait = w; cWait = true; } return -1; }
@@ -685,12 +719,13 @@
         const departT = bestT + svc;
         let pk = pick(best, departT, d, ty, svc, capT, mat);
         if (!pk && M && M.a4 && kBest !== 1 && !anyNeed(mat)) { // nothing needs this material (on site or banked in a stockpile): ship it off site if an export takes it (A4)
-          const e = pickExport(best, mat, d);
+          const e = pickExport(best, mat, d, departT, ty, svc);
           if (e.x >= 0) pk = { j: e.x, arc: null };
+          else if (e.wait !== null) pk = { wait: e.wait, queue: false, con: true }; // an export exists but a blockage is still closed: hold like any other wait
         }
         if (M && M.a5 && kBest === 0 && (!pk || (pk.wait !== undefined && !pk.queue && !pk.con && !(pk.wait < P.we[best] && pk.wait > bestT)))) {
           // nowhere on site can take it and it cannot wait for a fill to open today: park it in the nearest stockpile with room (A5)
-          const x = pickStock(best);
+          const x = pickStock(best, d, departT, ty, svc);
           if (x >= 0) pk = { j: x, arc: null, parked: !anyNeed(mat) };
         }
         if (!pk || pk.wait !== undefined) {

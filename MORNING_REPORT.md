@@ -6,6 +6,7 @@ STATUS: run in progress. This file is updated after every step, so it is valid e
 - `step0-green`: compaction default 1.0, branch cleanup, dispatcher merge attempted and NOT adopted (see DECISIONS 3-4). Last known good before this run: `phase4-done`.
 
 ## Built
+- D4 calendar (`d4-green`), C3 closed periods (`c3-green`), C1 route blockages (`c1-green`): engine, validation, hand-checked tests 42-44. UI for these comes at the end of Phase 5.
 - A1 default compaction 1.0 (test 41).
 - `tests/perf.js`: speed harness for comparing an engine directory with `.baseline`.
 

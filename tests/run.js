@@ -99,6 +99,10 @@ function audit(name, scn) {
       if (i < P.n && inC(i, day)) bad++;
       if (j < P.n && inC(j, Math.floor(L.tip[k] / 1440))) bad++;
     }
+    if (P.con && P.con.blocks && P.cfg.simple && i < P.n && j < P.n) { // route blockages (C1): the load reaches each blockage on its route no earlier than it opens
+      const lo = Math.min(P.mid[i], P.mid[j]), hi = Math.max(P.mid[i], P.mid[j]);
+      for (const b of P.con.blocks) if (b.x > lo && b.x < hi && L.depart[k] + Math.round(Math.abs(b.x - P.mid[i]) / 1000 / P.speed * 60) < b.openAbs) bad++;
+    }
     perDay[day] = (perDay[day] || 0) + 1;
     (slotEvents[i] = slotEvents[i] || []).push([L.start[k], 1], [L.depart[k], -1]);
   }
@@ -1027,6 +1031,50 @@ console.log('\n43. C3 CLOSED PERIODS: no loading from, and no tipping into, a cl
   ok(Model.validate(c3([{ sec: 'b', from: '2027-01-12', to: '2027-01-10' }])).some(x => /ends before it starts/.test(x.text)), 'an end before the start is reported');
   const hashOf = r => crypto.createHash('sha1').update(JSON.stringify([r.log.src, r.log.dst, r.log.start, r.log.tip, r.log.t])).digest('hex').slice(0, 12);
   ok(hashOf(Engine.simulate(withMods(Model.exampleSimple(), { C3: true }, { C3: { periods: [] } }))) === hashOf(Engine.simulate(Model.exampleSimple())), 'C3 with no periods reproduces the core result');
+}
+
+console.log('\n44. C1 ROUTE BLOCKAGES: nothing passes a blockage before its opening date');
+{
+  const days = r => Array.from({ length: r.n }, (_, k) => Math.floor(r.log.start[k] / 1440)).join();
+  const mk = (id, len, q) => { const x = Model.newSection(0); x.id = id; x.name = id; x.lengthM = len; Model.setQty(x, q); x.maxLoaders = 1; return x; };
+  const road = (secs, blocks, extra) => { const o = Model.defaults(); o.settings.startDate = '2027-01-11'; o.sections = secs; const sc = Model.normalise(o); return withMods(sc, Object.assign({ C1: true }, extra || {}), { C1: { blocks: blocks.map((b, k) => Object.assign({ id: 'b' + k, name: 'River crossing' }, b)) } }); };
+  // Road: a cut 0-1000 (100 t, mid 500) | b fill 1000-2000 (60 t, mid 1500) | c fill 2000-3000 (40 t, mid 2500). 5 kph: a to b 12 min, a to c 24 min.
+  // A blockage at chainage 2000 (between b and c) opens Wednesday 13 Jan. Loads 1-3 go to b on Monday (07:22, 07:32, 07:42). Loads 4 and 5 can only go to c,
+  // across the blockage: they wait until Wednesday, start 07:00 and 07:10, and tip 24 min after leaving at 07:34 and 07:44.
+  const A = () => [mk('a', 1000, 100), mk('b', 1000, -60), mk('c', 1000, -40)];
+  const r = audit('C1 blockage between b and c', road(A(), [{ chainageM: 2000, openDate: '2027-01-13' }]));
+  ok(days(r) === '0,0,0,2,2' && r.log.dst.join() === '1,1,1,2,2', 'hand: three loads to b on Monday, the two for c wait until Wednesday');
+  ok(hhmm(r.log.tip[3]) === '07:34' && hhmm(r.log.tip[4]) === '07:44' && r.summary.complete, 'hand: they tip at 07:34 and 07:44 on Wednesday, and the job completes');
+  const free = Engine.simulate(road(A(), []));
+  ok(days(free) === '0,0,0,0,0' && r.summary.endTime > free.summary.endTime, 'direction: without the blockage everything moves on Monday; with it the finish is later');
+  // The check is on when the load PASSES the blockage, not on the day it leaves. a mid 500 | z through 1000-61000 | c fill 61000-62000 (mid 61500).
+  // A blockage at 30,500 (30 km from a = 360 min) opens Wednesday 00:00 (minute 2880). A load must leave no earlier than Tuesday 18:00 (2880 - 360),
+  // so its loading starts 17:50. Monday: blocked. Tuesday 07:00: it would pass too early, so the source holds until 17:50. All five loads then start 17:50-18:30 on Tuesday.
+  const L = road([mk('a', 1000, 100), mk('z', 60000, 0), mk('c', 1000, -100)], [{ chainageM: 30500, openDate: '2027-01-13' }]);
+  const long = audit('C1 long haul crossing after midnight', L);
+  ok(days(long) === '1,1,1,1,1' && hhmm(long.log.start[0]) === '17:50' && hhmm(long.log.start[4]) === '18:30', 'hand: a Tuesday 17:50 load reaches the blockage exactly at Wednesday 00:00 (start 17:50 ... 18:30, all on Tuesday)');
+  // an export across a blockage waits too (one feasibility path for every destination)
+  const ex = road([mk('a', 1000, 140), mk('b', 1000, -100), mk('c', 1000, 0)], [{ chainageM: 2000, openDate: '2027-01-13' }], { A4: true });
+  ex.modules.A4.points = [{ id: 'x1', name: 'Gate', kind: 'export', chainageM: 2500, dailyT: 1e6, costPerT: 5, roundTripMin: 30 }];
+  const er = audit('C1 export beyond a blockage', ex);
+  ok(days(er) === '0,0,0,0,0,2,2' && hhmm(er.log.tip[5]) === '08:04' && hhmm(er.log.tip[6]) === '08:14', 'hand: the surplus loads for the export gate wait until Wednesday (07:34 arrival + 30 min = 08:04 and 08:14)');
+  // soil is not parked in a stockpile because of a blockage
+  const st = road(A(), [{ chainageM: 2000, openDate: '2027-01-13' }], { A5: true });
+  st.modules.A5.stockpiles = [{ id: 'k1', name: 'Dump', chainageM: 500, capacityT: 60, handleCostPerT: 2, lanes: 1 }];
+  ok(Engine.simulate(st).msum.stockInT === 0, 'a blockage wait does not send soil to a stockpile');
+  // a fixed fleet works with a blockage: lorries are never in two places, everything is placed
+  const fl = audit('C1 with a 2-lorry fleet', road(A(), [{ chainageM: 2000, openDate: '2027-01-13' }], { B1: true })); 
+  const fl2 = road(A(), [{ chainageM: 2000, openDate: '2027-01-13' }], { B1: true }); fl2.modules.B1.fleet = 2;
+  ok(audit('C1 with a 2-lorry fleet (fleet 2)', fl2).summary.complete, 'a 2-lorry fleet still completes the job across the blockage');
+  // B3 (separate speeds) puts the blockage on the same travel-time axis: equal speeds give the same result
+  const b3 = road(A(), [{ chainageM: 2000, openDate: '2027-01-13' }], { B3: true }); Object.assign(b3.modules.B3, { loadedKph: 5, emptyKph: 5 });
+  ok(days(audit('C1 with B3 speeds', b3)) === '0,0,0,2,2', 'with B3 at the same speed the blockage gives the same days');
+  // plain-English validation and conflicts
+  ok(Model.validate(road(A(), [{ chainageM: 99999, openDate: '2027-01-13' }])).some(x => x.level === 'error' && /chainage must be between/.test(x.text) && x.cell.mod === 'C1'), 'a blockage off the end of the road is rejected');
+  ok(Model.validate(road(A(), [{ chainageM: 2000, openDate: 'soon' }])).some(x => x.level === 'error' && /opening date is not a valid/.test(x.text)), 'a bad opening date is rejected');
+  ok(Model.validate(road(A(), [{ chainageM: 1000, openDate: '2027-01-13' }])).some(x => x.level === 'warn' && /can only send its soil to the other side of River crossing, so it cannot start before/.test(x.text)), 'conflict: a cut whose only fills are across the blockage is flagged with the date');
+  const hashOf = q => crypto.createHash('sha1').update(JSON.stringify([q.log.src, q.log.dst, q.log.start, q.log.tip, q.log.t])).digest('hex').slice(0, 12);
+  ok(hashOf(Engine.simulate(withMods(Model.exampleSimple(), { C1: true }, { C1: { blocks: [] } }))) === hashOf(Engine.simulate(Model.exampleSimple())), 'C1 with no blockages reproduces the core result');
 }
 
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');

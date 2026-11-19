@@ -234,6 +234,24 @@
           if (!(+x.handleCostPerT >= 0)) add('error', nm + ': the double-handling cost cannot be negative.', mc(x.id + ':handleCostPerT'));
         }
       });
+    } else if (id === 'C1') {
+      const tot = scn.sections.reduce((a, x) => a + (+x.lengthM || 0), 0);
+      (m.blocks || []).forEach(b => {
+        const nm = b.name || 'A blockage';
+        if (!(+b.chainageM >= 0 && +b.chainageM <= tot)) add('error', nm + ': the chainage must be between 0 and ' + Math.round(tot) + ' m, the length of the road.', mc(b.id + ':chainageM'));
+        if (Engine.parseISO(b.openDate) === null) add('error', nm + ': the opening date is not a valid date.', mc(b.id + ':openDate'));
+      });
+      // plain-English conflicts: soil that can only be reached across a blockage
+      const mids = []; let c = 0; scn.sections.forEach(s => { mids.push(c + (+s.lengthM || 0) / 2); c += +s.lengthM || 0; });
+      (m.blocks || []).forEach(b => {
+        if (!(+b.chainageM >= 0) || Engine.parseISO(b.openDate) === null) return;
+        const side = i => (mids[i] < +b.chainageM ? 0 : 1), nm = b.name || 'The blockage', when = Engine.fmtDay(Engine.parseISO(b.openDate));
+        scn.sections.forEach((s, i) => {
+          const q = Engine.netQty(s); if (!q) return;
+          const same = scn.sections.some((o, k) => k !== i && side(k) === side(i) && Math.sign(Engine.netQty(o)) === -Math.sign(q));
+          if (!same) add('warn', (s.name || 'A section') + ' can only ' + (q > 0 ? 'send its soil to' : 'receive soil from') + ' the other side of ' + nm + ', so it cannot start before ' + when + '.', mc(b.id + ':openDate'));
+        });
+      });
     } else if (id === 'C3') {
       (m.periods || []).forEach((x, k) => {
         const nm = 'Closed period ' + (k + 1) + (x.note ? ' (' + x.note + ')' : '');
