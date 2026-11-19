@@ -1492,6 +1492,19 @@ console.log('\n57. E6 PLANNED VERSUS ACTUAL: variance by day and a re-forecast f
   ok(Model.validate(e6([{ date: '2027-01-11', tonnes: 5 }, { date: '2027-01-11', tonnes: 7 }])).some(x => x.level === 'warn' && /Two actuals/.test(x.text)), 'two actuals on one date are flagged');
 }
 
+console.log('\n58. E3 MASS HAUL DIAGRAM: cumulative cut minus fill along the chainage, at the start and as the job runs');
+{
+  const r = Engine.simulate(tiny()), mh = t => Engine.massHaul(r, t);
+  ok(mh(0).xs.join() === '0,1000,2000' && mh(0).plan.join() === '0,100,0' && mh(0).now.join() === '0,100,0' && mh(0).balance === 0, 'hand: a 100 t cut then a 100 t fill: the curve rises 0 to 100 over the cut and falls back to 0 over the fill (balanced)');
+  // hand: at 07:25 on Monday load 1 has tipped (departed 07:10, tipped 07:22) and load 2 is on the road (departed 07:20). Cut left = 100 - 40 = 60 t; fill still needs 100 - 20 = 80 t.
+  ok(mh(7 * 60 + 25).now.join() === '0,60,-20', 'hand: at 07:25 the curve reads 60 at the end of the cut and -20 at the end of the fill (20 t is in transit)');
+  ok(mh(r.summary.endTime + 1).now.join() === '0,0,0', 'at the end of the job the curve is flat at 0');
+  const ex = Engine.simulate(Model.exampleSimple()), m0 = Engine.massHaul(ex, 0);
+  ok(m0.balance === 16000 && m0.plan[m0.plan.length - 1] === 16000 && m0.plan.length === 13, '12-section example: the curve ends at +16,000 t, the surplus the model reports');
+  const m1 = Engine.massHaul(ex, ex.summary.endTime + 1);
+  ok(m1.now[m1.now.length - 1] === 16000 && Math.max(...m1.now.map(Math.abs)) <= Math.max(...m0.plan.map(Math.abs)), 'at the end the surplus is still +16,000 t, and no point is larger than at the start');
+}
+
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
 {
   const a = Model.exampleSimple(); a.setup.level = 'custom'; a.modules.B1 = { site: { fleet: 12 }, mode: 'site' };

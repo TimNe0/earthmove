@@ -15,12 +15,14 @@
   <input id="scnname" type="text" aria-label="Scenario name">
   <span id="modbadge"></span>
   <button id="btnTheme" title="Switch between light, dark and automatic (follows your system)"></button>
+  <button id="btnReplay" hidden title="Hide the editing controls for a client meeting">Replay mode</button>
   <button id="btnSetup">Setup</button>
-  <select id="selExample" aria-label="Load example"><option value="">Examples…</option><option value="simple">Simple example (12 sections, 8 km)</option><option value="modules">Modules demo</option><option value="materials">Materials demo</option><option value="site">Site demo</option><option value="risk">Risk demo</option></select>
+  <select id="selExample" aria-label="Load example"><option value="">Examples…</option><option value="simple">Simple example (12 sections, 8 km)</option><option value="modules">Modules demo</option><option value="materials">Materials demo</option><option value="site">Site demo</option><option value="risk">Risk demo</option><option value="commercial">Commercial demo</option></select>
   <button id="btnSave">Save scenario</button>
   <button id="btnLoad">Load scenario</button>
   <input id="fileLoad" type="file" accept=".json,application/json" hidden>
 </header>
+<button id="replayExit" hidden title="Show the editing controls again">Exit replay mode</button>
 <main id="screenSetup" hidden></main>
 <main id="screenMain">
   <section id="playbar">
@@ -60,7 +62,7 @@
   </div>
   <div id="lower">
     <div class="panel"><h3>Movements per day (bars, left axis) and trucks needed each day (line, right axis)</h3><canvas id="chart"></canvas></div>
-    <div class="panel">
+    <div class="panel" id="tabpanel">
       <div class="tabs" id="tabs"></div>
       <div id="tabbody"></div>
     </div>

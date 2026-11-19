@@ -124,3 +124,16 @@ td.acc .chk{display:inline-block;margin-right:8px;font-size:12px;white-space:now
 .hist i{flex:1;min-width:2px;background:var(--accent2);opacity:.75}
 .hist i.p50{background:var(--accent);opacity:1}
 .hist i.p80{background:var(--err);opacity:1}
+
+/* reporting (E7): replay mode hides the editing controls; printing shows only the report */
+.replay #tabpanel,.replay #tabs,.replay #tabbody,.replay #btnSetup,.replay #selExample,.replay #btnSave,.replay #btnLoad,.replay #btnReplay,.replay #bOpt,.replay #scnname,.replay #optpanel{display:none!important}
+#replayExit{position:fixed;right:12px;bottom:12px;z-index:50;background:var(--accent);color:#fff;border:0;border-radius:6px;padding:8px 14px;opacity:.85}
+#report{display:none}
+#report table.rep{border-collapse:collapse;width:100%;margin:6px 0}
+#report table.rep th,#report table.rep td{border:1px solid #bbb;padding:4px 8px;text-align:left;font-size:12px}
+@media print{
+  body>*:not(#report){display:none!important}
+  #report{display:block!important;color:#000;background:#fff;padding:0;font:12px system-ui}
+  #report h1{font-size:20px;margin:0 0 4px} #report h2{font-size:14px;margin:14px 0 2px;break-after:avoid}
+  #report img{max-height:230mm;break-inside:avoid}
+}

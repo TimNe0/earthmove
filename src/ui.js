@@ -4,9 +4,10 @@
   const E = Engine, M = Model, MOD = Modules;
   const $ = id => document.getElementById(id);
   const STORE = 'earthmove.scenario.v1';
-  MOD.setBuilt(['A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'C1', 'C2', 'C3', 'C4', 'C5', 'D1', 'D2', 'D3', 'D4', 'D5', 'E8']); // modules built so far
+  MOD.setBuilt(['A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'C1', 'C2', 'C3', 'C4', 'C5', 'D1', 'D2', 'D3', 'D4', 'D5', 'E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7', 'E8']); // modules built so far
   const modOn = id => !!(MOD.byId[id] && MOD.byId[id].built && scn.setup.modules[id]);
   const anySite = () => ['C1', 'C2', 'C3', 'C4', 'C5', 'D4'].some(modOn); // site constraints and calendar (the D3 target dates live in the Sections table)
+  const anyCommercial = () => ['E1', 'E2', 'E4'].some(modOn); // cost, carbon and the programme export
   const anyRisk = () => ['D1', 'D2'].some(modOn); // weather and risk
   const anyA = () => ['A1', 'A2', 'A3', 'A4', 'A5'].some(modOn); // any materials module on
   const matName = id => { const m = (scn.materials || []).find(x => x.id === id); return m ? (m.name || m.id) : id; };
@@ -29,8 +30,13 @@
   }
   const fmt = n => Math.round(n).toLocaleString('en-GB');
   // Quantities from the engine are in tonnes; show them in the unit the user chose.
-  const UF = () => (scn.settings.units === 'm3' && +scn.settings.density > 0 ? +scn.settings.density : 1);
-  const UL = () => (scn.settings.units === 'm3' ? 'm³' : 't');
+  // Input units (what quantities are typed in) and results units (what results are shown in) are separate. With A1 or A3 on every soil type has its own density,
+  // so results are shown in tonnes, which is exact; otherwise results can be shown in tonnes or m³ (at the site density) whichever the inputs use.
+  const noMatUnits = () => !(modOn('A1') || modOn('A3'));
+  const resUnits = () => { const u = (scn.ui || {}).resUnits; if (!noMatUnits()) return 'tonnes'; if (u === 'tonnes' || u === 'm3') return u; return scn.settings.units === 'm3' ? 'm3' : 'tonnes'; };
+  const UF = () => (resUnits() === 'm3' && +scn.settings.density > 0 ? +scn.settings.density : 1); // results factor: tonnes per displayed unit
+  const RL = () => (resUnits() === 'm3' ? 'm³' : 't');
+  const UL = () => (scn.settings.units === 'm3' ? 'm³' : 't'); // the unit quantities are typed in
   const Q = v => fmt(v / UF()), Q1 = v => fmt1(v / UF());
   const fmt1 = n => (Math.round(n * 10) / 10).toLocaleString('en-GB');
 
@@ -59,7 +65,7 @@
       maxTh = 1; for (let i = 0; i < res.P.n; i++) maxTh = Math.max(maxTh, Math.abs(res.P.qty[i]) / res.P.len[i]);
     }
     S.t = Math.min(S.t, endT);
-    $('modbadge').textContent = MOD.badgeText(scn) + (planText() ? '. ' + planText() : '');
+    $('modbadge').textContent = MOD.badgeText(scn) + (planText() ? '. ' + planText() : ''); $('btnReplay').hidden = !modOn('E7');
     if ($('scnname') !== document.activeElement) $('scnname').value = scn.name;
     tcBuild(); tcLayout();
     renderBanner(); renderTabs(rebuildTable); updateClock(); S.dirty = true; autosave();
@@ -68,8 +74,8 @@
     const out = issues.slice();
     if (res) {
       const s = res.summary;
-      if (s.unplacedSurplus > 0.5) out.push({ level: 'warn', text: 'Cut and fill do not balance: ' + Q(s.unplacedSurplus) + ' ' + UL() + ' of surplus soil has nowhere to go and is left over.' });
-      if (s.unfilled > 0.5) out.push({ level: 'warn', text: 'Cut and fill do not balance: ' + Q(s.unfilled) + ' ' + UL() + ' of fill is still short at the end.' });
+      if (s.unplacedSurplus > 0.5) out.push({ level: 'warn', text: 'Cut and fill do not balance: ' + Q(s.unplacedSurplus) + ' ' + RL() + ' of surplus soil has nowhere to go and is left over.' });
+      if (s.unfilled > 0.5) out.push({ level: 'warn', text: 'Cut and fill do not balance: ' + Q(s.unfilled) + ' ' + RL() + ' of fill is still short at the end.' });
       if (s.stuck && s.unplacedSurplus > 0.5 && s.unfilled > 0.5) out.push({ level: 'error', text: 'Movement stopped with soil still to move on both sides. A fill section may never open or may be unreachable.' });
     }
     return out;
@@ -79,8 +85,8 @@
     if (!res) { b.append(h('div', { class: 'note err' }, 'There are problems to fix before the model can run. See the Messages tab.')); return; }
     const s = res.summary;
     if (E.planStatus(scn) === 'stale') b.append(h('div', { class: 'note warn' }, 'The optimised plan was made for different inputs, so it is not being used. Press Optimise to make a new one.'));
-    if (s.unplacedSurplus > 0.5) b.append(h('div', { class: 'note warn' }, '⚠ Does not balance: ' + Q(s.unplacedSurplus) + ' ' + UL() + ' of surplus is left over (total cut ' + Q(s.totalCut) + ' ' + UL() + ', total fill ' + Q(s.totalFill) + ' ' + UL() + ').'));
-    if (s.unfilled > 0.5) b.append(h('div', { class: 'note warn' }, '⚠ Does not balance: ' + Q(s.unfilled) + ' ' + UL() + ' short (total cut ' + Q(s.totalCut) + ' ' + UL() + ', total fill ' + Q(s.totalFill) + ' ' + UL() + ').'));
+    if (s.unplacedSurplus > 0.5) b.append(h('div', { class: 'note warn' }, '⚠ Does not balance: ' + Q(s.unplacedSurplus) + ' ' + RL() + ' of surplus is left over (total cut ' + Q(s.totalCut) + ' ' + RL() + ', total fill ' + Q(s.totalFill) + ' ' + RL() + ').'));
+    if (s.unfilled > 0.5) b.append(h('div', { class: 'note warn' }, '⚠ Does not balance: ' + Q(s.unfilled) + ' ' + RL() + ' short (total cut ' + Q(s.totalCut) + ' ' + RL() + ', total fill ' + Q(s.totalFill) + ' ' + RL() + ').'));
   }
 
   // ---------- screens ----------
@@ -169,7 +175,7 @@
     $('counter').replaceChildren(h('div', {}, 'Movements today ', h('b', {}, used + ' / ' + P.cap)),
       h('div', { class: 'bar' }, h('i', { style: 'width:' + Math.min(100, used / P.cap * 100) + '%' })),
       h('div', {}, 'Trucks working now ', h('b', {}, E.trucksAt(trucks, S.t)), ' (peak today ' + (trucks.dayPeak[day] || 0) + ', whole job ' + trucks.peak + (res.summary.fleetSize ? ', fleet ' + res.summary.fleetSize : '') + ')'),
-      h('small', {}, 'Total so far: ' + fmt(started) + ' loads, ' + Q(tn) + ' ' + UL() + ''));
+      h('small', {}, 'Total so far: ' + fmt(started) + ' loads, ' + Q(tn) + ' ' + RL() + ''));
   }
   function setPlaying(on) { S.playing = on; $('bPlay').textContent = on ? '⏸' : '▶'; S.last = performance.now(); }
   function seek(t) { S.t = Math.max(0, Math.min(endT, t)); updateClock(); S.dirty = true; }
@@ -182,7 +188,7 @@
       updateClock(); S.dirty = true;
     }
     S.last = ts;
-    if (S.dirty && S.screen === 'main') { S.dirty = false; drawRoad(); drawOverview(); drawChart(); drawTC(); }
+    if (S.dirty && S.screen === 'main') { S.dirty = false; drawRoad(); drawOverview(); drawChart(); drawTC(); if (S.tab === 'masshaul') drawMH(); }
     requestAnimationFrame(frame);
   }
 
@@ -256,7 +262,7 @@
       ctx.fillStyle = '#f3ead8'; ctx.font = '11px system-ui';
       ctx.save(); ctx.beginPath(); ctx.rect(sx, base + 100, sw - 2, H - base - 100); ctx.clip();
       ctx.fillText(P.names[i], sx + 3, base + 114);
-      ctx.fillStyle = '#cdbf9f'; ctx.fillText(q === 0 ? 'no soil' : (q > 0 ? '+' : '−') + Q(rem) + ' ' + UL() + '', sx + 3, base + 128);
+      ctx.fillStyle = '#cdbf9f'; ctx.fillText(q === 0 ? 'no soil' : (q > 0 ? '+' : '−') + Q(rem) + ' ' + RL() + '', sx + 3, base + 128);
       ctx.restore();
       ctx.strokeStyle = COL.line; ctx.beginPath(); ctx.moveTo(sx + 0.5, base); ctx.lineTo(sx + 0.5, H); ctx.stroke();
       hits.push({ i, sx, sw, rem });
@@ -301,6 +307,7 @@
       ctx.fillStyle = COL.sand2;
       for (let c = 0; c < cand.length; c += stride) {
         const k = cand[c], a = P.mid[L.src[k]], b = P.mid[L.dst[k]], f = (S.t - L.depart[k]) / (L.tip[k] - L.depart[k]);
+        if (res.mlog) ctx.fillStyle = matCol(res.mlog.mat[k]) || COL.sand2; // grains take the colour of their soil class (A2)
         const x = X(a + (b - a) * f); if (x < -5 || x > W + 5) continue;
         const grains = Math.max(2, Math.round(L.t[k] / 3 / stride));
         for (let q = 0; q < grains; q++) ctx.fillRect(x + (hash(k * 7 + q) - 0.5) * 16, base - 3 - hash(k * 13 + q) * 14, 3, 3);
@@ -369,7 +376,7 @@
       if (drag) { S.x0 = drag.x0 - (e.clientX - drag.x) / geom().ppm; S.dirty = true; return; }
       const g = geom(), r = cv.getBoundingClientRect(), m = S.x0 + (e.clientX - r.left - PAD) / g.ppm;
       const hit = (cv._hits || []).find(s => m >= res.P.chain[s.i] && m < res.P.chain[s.i] + res.P.len[s.i]);
-      cv.title = hit ? res.P.names[hit.i] + ': ' + Q(res.P.qty[hit.i]) + ' ' + UL() + ' to start, ' + Q(hit.rem) + ' ' + UL() + ' remaining' : '';
+      cv.title = hit ? res.P.names[hit.i] + ': ' + Q(res.P.qty[hit.i]) + ' ' + RL() + ' to start, ' + Q(hit.rem) + ' ' + RL() + ' remaining' : '';
     });
     cv.addEventListener('pointerup', () => (drag = null));
     cv.addEventListener('wheel', e => { if (!res) return; e.preventDefault(); zoomAt(e.deltaY < 0 ? 1.25 : 0.8, e.clientX - cv.getBoundingClientRect().left); }, { passive: false });
@@ -392,7 +399,7 @@
   })();
 
   // ---------- tabs ----------
-  const tabsList = () => [['sections', 'Sections']].concat(['B1', 'B2', 'B3', 'B4', 'B5', 'B6'].some(modOn) ? [['fleet', 'Fleet & plant']] : [], anyA() ? [['materials', 'Materials & sites']] : [], anySite() ? [['site', 'Site & calendar']] : [], anyRisk() ? [['risk', 'Weather & risk']] : [], [['results', 'Results'], ['log', 'Movement log']]).concat(MOD.activeIds(scn).indexOf('D5') >= 0 ? [['scenarios', 'Scenarios']] : [], [['messages', 'Messages']]);
+  const tabsList = () => [['sections', 'Sections']].concat(['B1', 'B2', 'B3', 'B4', 'B5', 'B6'].some(modOn) ? [['fleet', 'Fleet & plant']] : [], anyA() ? [['materials', 'Materials & sites']] : [], anySite() ? [['site', 'Site & calendar']] : [], anyRisk() ? [['risk', 'Weather & risk']] : [], anyCommercial() ? [['commercial', 'Cost & carbon']] : [], modOn('E6') ? [['actuals', 'Actual progress']] : [], modOn('E3') ? [['masshaul', 'Mass haul']] : [], [['results', 'Results'], ['log', 'Movement log']]).concat(MOD.activeIds(scn).indexOf('D5') >= 0 ? [['scenarios', 'Scenarios']] : [], [['messages', 'Messages']]);
   function renderTabs(rebuildTable) {
     const tabs = $('tabs'); tabs.replaceChildren();
     const nMsg = allMessages().filter(m => m.level !== 'info').length;
@@ -401,6 +408,9 @@
     const body = $('tabbody');
     if (S.tab === 'sections') { if (rebuildTable || !body.firstChild || !body.querySelector('#sectable')) renderSections(); else updateChainage(); }
     else if (S.tab === 'fleet') { if (rebuildTable || !body.querySelector('#fleetpane')) renderFleet(); }
+    else if (S.tab === 'commercial') { if (rebuildTable || !body.querySelector('#compane')) renderCommercial(); }
+    else if (S.tab === 'actuals') renderActuals();
+    else if (S.tab === 'masshaul') renderMassHaul();
     else if (S.tab === 'risk') { if (rebuildTable || !body.querySelector('#riskpane')) renderRisk(); }
     else if (S.tab === 'site') { if (rebuildTable || !body.querySelector('#sitepane')) renderSite(); }
     else if (S.tab === 'materials') { if (rebuildTable || !body.querySelector('#matpane')) renderMaterials(); }
@@ -428,6 +438,7 @@
       st.append(h('div', {}, h('label', {}, 'Soil density (tonnes per m\u00b3)'), dn));
     }
     body.append(h('h3', {}, 'Global settings'), st);
+    if (modOn('E5')) body.append(importPanel());
     const b3v = modOn('B3') && scn.modules.B3.mode === 'bySection', b4v = modOn('B4') && scn.modules.B4.mode === 'bySection', b5m = modOn('B5') && scn.modules.B5.mode === 'byMachine';
     const heads = [['#'], ['Name'], ['Length (m)', 1], [anyA() ? 'Soil (' + UL() + '): + cut, − fill, one line per soil type, dug top to bottom' : 'Soil (' + UL() + '): + surplus, − needs fill', 1], ['Loads start from'], ['to'], ['Earliest tipping date']];
     if (!b5m) heads.push(['Max loaders']);
@@ -492,7 +503,7 @@
   }
   function moveSec(i, d) { const j = i + d; if (j < 0 || j >= scn.sections.length) return; const a = scn.sections; [a[i], a[j]] = [a[j], a[i]]; recompute(true); }
   function focusCell(cell) {
-    showScreen('main'); S.tab = cell.mod ? (cell.mod[0] === 'A' ? 'materials' : /^D[12]$/.test(cell.mod) ? 'risk' : /^[CD]/.test(cell.mod) ? 'site' : 'fleet') : 'sections'; renderTabs(true);
+    showScreen('main'); S.tab = cell.mod ? (cell.mod[0] === 'A' ? 'materials' : /^D[12]$/.test(cell.mod) ? 'risk' : /^[CD]/.test(cell.mod) ? 'site' : /^E[124]$/.test(cell.mod) ? 'commercial' : cell.mod === 'E6' ? 'actuals' : 'fleet') : 'sections'; renderTabs(true);
     const key = cell.settings ? 'settings:' + cell.settings : cell.mod ? 'mod:' + cell.mod + ':' + cell.field : cell.sec + ':' + cell.field;
     const el = document.querySelector('[data-cell="' + key + '"]'); if (!el) return;
     const inp = el.matches('input') ? el : el.querySelector('input');
@@ -510,14 +521,17 @@
     const body = $('tabbody'); body.replaceChildren();
     if (!res) { body.append(h('div', { class: 'note err' }, 'Fix the problems under Messages first.')); return; }
     const s = res.summary, P = res.P, stat = (v, l) => h('div', { class: 'stat' }, h('b', {}, v), h('span', {}, l));
+    body.append(noMatUnits() ? h('p', { class: 'hint' }, 'Show results in ', h('select', { 'data-cell': 'settings:resUnits', onchange: ev => { scn.ui.resUnits = ev.target.value; recompute(true); } },
+      h('option', { value: 'auto', selected: !['tonnes', 'm3'].includes(scn.ui.resUnits) }, 'the units I type quantities in'), h('option', { value: 'tonnes', selected: scn.ui.resUnits === 'tonnes' }, 'tonnes'), h('option', { value: 'm3', selected: scn.ui.resUnits === 'm3' }, 'cubic metres (at ' + scn.settings.density + ' t per m³)')), ' (this changes only how results are shown)')
+      : h('p', { class: 'hint' }, 'Results are shown in tonnes, which is exact: each soil type has its own density.'));
     body.append(h('div', { class: 'note' }, MOD.badgeText(scn) + '. ' + (planText() || 'Dispatch: nearest available destination (no optimised plan).')),
       h('div', { class: 'stats' },
         stat(s.completion === null ? 'Not complete' : E.fmtDay(P.startDay + s.completionDay), 'Overall completion'),
-        stat(fmt(s.moves), 'Movements'), stat(Q(s.tonnesMoved) + ' ' + UL() + '', 'Soil moved'), stat(fmt(s.tonneKm) + ' t·km', 'Total tonne-km'),
+        stat(fmt(s.moves), 'Movements'), stat(Q(s.tonnesMoved) + ' ' + RL() + '', 'Soil moved'), stat(fmt(s.tonneKm) + ' t·km', 'Total tonne-km'),
         stat((s.utilisation * 100).toFixed(1) + '%', 'Avg use of daily limit (first to last move, working days)'),
         stat(s.idleDays + ' of ' + s.workingSpan, 'Idle working days'),
-        stat(Q(s.totalCut) + ' / ' + Q(s.totalFill) + ' ' + UL() + '', 'Total cut / total fill'),
-        stat((s.imbalance >= 0 ? '+' : '−') + Q(Math.abs(s.imbalance)) + ' ' + UL() + '', 'Balance (+ surplus, − short)')),
+        stat(Q(s.totalCut) + ' / ' + Q(s.totalFill) + ' ' + RL() + '', 'Total cut / total fill'),
+        stat((s.imbalance >= 0 ? '+' : '−') + Q(Math.abs(s.imbalance)) + ' ' + RL() + '', 'Balance (+ surplus, − short)')),
       h('h3', {}, 'Trucks needed'),
       h('div', { class: 'stats' },
         stat(String(trucks.peak), 'Peak trucks needed in a day' + (trucks.peakDay >= 0 ? ' (' + E.fmtDay(P.startDay + trucks.peakDay) + ')' : '')),
@@ -537,6 +551,11 @@
       if (modOn('B4')) cards.push(stat(fmt(s.tipWaitMin / 60) + ' h', 'Lorry time queuing to tip'));
       if (cards.length) body.append(h('h3', {}, 'Fleet and plant'), h('div', { class: 'stats' }, cards));
     }
+    if (modOn('E1') || modOn('E2')) { // E1/E2: cost and carbon
+      const cc = E.costCarbon(scn, res), money = v => '\u00a3' + fmt(v);
+      if (cc) body.append(h('h3', {}, 'Cost and carbon'), h('div', { class: 'stats' }, modOn('E1') ? [stat(money(cc.total), 'Total cost'), stat('\u00a3' + (cc.perTonne || 0).toFixed(2), 'Cost per tonne placed'), stat(money(cc.hire), 'Plant hire'), stat(money(cc.fuel), 'Fuel'), stat(money(cc.labour), 'Labour'), stat(money(cc.tip), 'Tip fees and purchases')] : null,
+        modOn('E2') ? [stat(cc.co2t.toFixed(1) + ' t CO\u2082e', 'Carbon'), stat(fmt(cc.litres) + ' litres', 'Fuel burned')] : null, stat(fmt(cc.lorryH) + ' / ' + fmt(cc.excH) + ' / ' + fmt(cc.recvH) + ' h', 'Lorry / loader / receiving plant hours')));
+    }
     if (modOn('D3')) { // D3: target dates
       const lt = E.lateness(scn, res);
       if (lt.length) body.append(...[h('h3', {}, 'Target dates'), h('div', { class: 'stats' }, stat(lt.filter(x => x.late).length + ' of ' + lt.length, 'Sections late against their target date')),
@@ -554,17 +573,17 @@
         un.length ? h('div', { class: 'note warn' }, 'Soil with nowhere to go: ' + un.map(k => matName(k) + ' ' + fmt(m.unplacedByMat[k]) + ' t').join(', ') + '. Allow it in a fill (Materials & sites), or add an export or a stockpile.') : null,
         m.nodes.length ? h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Site', 'Type', 'Tonnes', 'Cost'].map((c, i) => h('th', { class: i > 1 ? 'num' : '' }, c)))), h('tbody', {}, m.nodes.map(x => h('tr', {}, h('td', {}, x.name), h('td', {}, x.kind === 1 ? 'Import' : x.kind === 2 ? 'Export' : 'Stockpile (in ' + fmt(x.tonnes) + ', out ' + fmt(x.out) + ', left ' + fmt(x.closing) + ')'), h('td', { class: 'num' }, fmt(x.kind === 3 ? x.out : x.tonnes) + ' t'), h('td', { class: 'num' }, money(x.cost))))))) : null].filter(Boolean));
     }
-    const name = i => P.names[i], list = o => Object.keys(o).map(k => name(+k) + ' (' + Q(o[k]) + ' ' + UL() + ')').join('; ');
+    const name = i => P.names[i], list = o => Object.keys(o).map(k => name(+k) + ' (' + Q(o[k]) + ' ' + RL() + ')').join('; ');
     const tb = h('tbody');
     res.sections.forEach((r, i) => {
       tb.append(h('tr', {}, h('td', {}, name(i)), h('td', { class: r.type }, r.type === 'cut' ? 'Cut' : r.type === 'fill' ? 'Fill' : 'No soil'),
         h('td', { class: 'num' }, r.qty ? (r.qty > 0 ? '+' : '−') + Q(Math.abs(r.qty)) : '0'),
         modOn('E8') ? h('td', {}, TC.data && TC.data.sections[i].start !== null ? levelDate(TC.data.sections[i].start) : '') : null,
-        h('td', {}, r.type === 'none' ? '' : (r.remaining > 0.5 ? 'Not reached (' + Q(r.remaining) + ' ' + UL() + ' ' + (r.type === 'cut' ? 'left' : 'short') + ')' : levelDate(r.levelTime))),
+        h('td', {}, r.type === 'none' ? '' : (r.remaining > 0.5 ? 'Not reached (' + Q(r.remaining) + ' ' + RL() + ' ' + (r.type === 'cut' ? 'left' : 'short') + ')' : levelDate(r.levelTime))),
         h('td', {}, r.type === 'cut' ? 'Went to: ' + (list(r.to) || 'nowhere') : r.type === 'fill' ? 'Came from: ' + (list(r.from) || 'nowhere') : '')));
     });
-    body.append(h('p', {}, h('button', { onclick: exportResults }, 'Export results CSV'), ' ', h('button', { onclick: exportLog }, 'Export movement log CSV'), ' ', h('button', { onclick: exportDaily }, 'Export daily CSV')),
-      h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Section', 'Type', 'Starting quantity (' + UL() + ')'].concat(modOn('E8') ? ['Earthworks starts'] : [], ['Reaches level', 'Where the soil went / came from']).map((c, i) => h('th', { class: i === 2 ? 'num' : '' }, c)))), tb)));
+    body.append(h('p', {}, h('button', { onclick: exportResults }, 'Export results CSV'), ' ', h('button', { onclick: exportLog }, 'Export movement log CSV'), ' ', h('button', { onclick: exportDaily }, 'Export daily CSV'), modOn('E4') ? [' ', h('button', { onclick: exportProgramme }, 'Export programme CSV')] : null, modOn('E7') ? [' ', h('button', { onclick: printReport }, 'Print report'), ' ', h('button', { onclick: () => setReplay(true) }, 'Replay mode')] : null),
+      h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Section', 'Type', 'Starting quantity (' + RL() + ')'].concat(modOn('E8') ? ['Earthworks starts'] : [], ['Reaches level', 'Where the soil went / came from']).map((c, i) => h('th', { class: i === 2 ? 'num' : '' }, c)))), tb)));
   }
   function renderLog() {
     const body = $('tabbody'); body.replaceChildren();
@@ -572,7 +591,7 @@
     const L = res.log, P = res.P, tb = h('tbody'), n = Math.min(res.n, 300);
     for (let k = 0; k < n; k++) tb.append(h('tr', {}, h('td', {}, k + 1), h('td', {}, P.names[L.src[k]]), h('td', {}, P.names[L.dst[k]]), res.mlog ? h('td', {}, matName(res.mlog.mat[k])) : null, h('td', { class: 'num' }, Q1(L.t[k])), h('td', {}, E.fmtTime(L.start[k], P.startDay)), h('td', {}, E.fmtTime(L.tip[k], P.startDay))));
     body.append(h('p', {}, fmt(res.n) + ' movements in total' + (res.n > n ? '. The first ' + n + ' are shown; export the CSV for all of them. ' : '. '), h('button', { onclick: exportLog }, 'Export movement log CSV')),
-      h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['#', 'From', 'To'].concat(res.mlog ? ['Soil'] : [], [UL() === 't' ? 'Tonnes' : 'm³', 'Loading starts', 'Tipped']).map((c, i) => h('th', { class: c === 'Tonnes' || c === 'm³' ? 'num' : '' }, c)))), tb)));
+      h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['#', 'From', 'To'].concat(res.mlog ? ['Soil'] : [], [RL() === 't' ? 'Tonnes' : 'm³', 'Loading starts', 'Tipped']).map((c, i) => h('th', { class: c === 'Tonnes' || c === 'm³' ? 'num' : '' }, c)))), tb)));
   }
 
 
@@ -747,6 +766,7 @@
         ctx.globalAlpha = 0.55; ctx.fillStyle = ctx.createPattern(hatchCv, 'repeat'); ctx.fillRect(sx, Math.min(ya, yb), sw, Math.abs(yb - ya)); ctx.globalAlpha = 1;
       });
     }
+    if (modOn('E6')) { const an = M.actualsAnalysis(scn, rs); if (an.length) { const y = Y(an[an.length - 1].day + 1); ctx.strokeStyle = '#2a7d3f'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]); ctx.beginPath(); ctx.moveTo(PAD, y); ctx.lineTo(W - PAD, y); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = '#2a7d3f'; ctx.font = 'bold 10px system-ui'; ctx.fillText('Actuals to ' + E.fmtDay(P.startDay + an[an.length - 1].day), PAD + 4, y - 4); } }
     if (modOn('D3')) E.lateness(scn, rs).forEach(x => { // a diamond at the target date on the section
       const sx = X(P.chain[x.i] + P.len[x.i] / 2), y = Y(x.targetDay - P.startDay); ctx.fillStyle = x.late ? COL.err : '#2a7d3f';
       ctx.beginPath(); ctx.moveTo(sx, y - 6); ctx.lineTo(sx + 6, y); ctx.lineTo(sx, y + 6); ctx.lineTo(sx - 6, y); ctx.closePath(); ctx.fill();
@@ -794,15 +814,15 @@
     const same = (a, b) => (!a && !b) || (a && b && a.o === b.o);
     if (!same(found, TC.hover)) { TC.hover = found; S.dirty = true; }
     if (!found) { tip.hidden = true; return; }
-    const P = res.P, dt = m => E.fmtTime(m, P.startDay), list = o => Object.keys(o).map(k => P.names[+k] + ' ' + Q(o[k]) + ' ' + UL()).join('; ');
+    const P = res.P, dt = m => E.fmtTime(m, P.startDay), list = o => Object.keys(o).map(k => P.names[+k] + ' ' + Q(o[k]) + ' ' + RL()).join('; ');
     tip.replaceChildren();
     if (found.kind === 'pair') {
       const p = found.o.p;
-      tip.append(h('b', {}, P.names[p.src] + ' → ' + P.names[p.dst] + (p.mat ? ' (' + matName(p.mat) + ')' : '')), h('div', {}, Q(p.tonnes) + ' ' + UL() + ' in ' + fmt(p.count) + ' loads'), h('div', {}, dt(p.t0) + ' to ' + dt(p.t1)), h('div', {}, fmt1(E.dist(P, p.src, p.dst) / 1000) + ' km haul'));
+      tip.append(h('b', {}, P.names[p.src] + ' → ' + P.names[p.dst] + (p.mat ? ' (' + matName(p.mat) + ')' : '')), h('div', {}, Q(p.tonnes) + ' ' + RL() + ' in ' + fmt(p.count) + ' loads'), h('div', {}, dt(p.t0) + ' to ' + dt(p.t1)), h('div', {}, fmt1(E.dist(P, p.src, p.dst) / 1000) + ' km haul'));
     } else {
       const sec = TC.data.sections[found.o.i], r = res.sections[found.o.i];
       tip.append(h('b', {}, P.names[sec.i] + (sec.type === 'cut' ? ' (cut)' : ' (fill)')), h('div', {}, 'Earthworks ' + dt(sec.start) + ' to ' + dt(sec.end) + (sec.reached ? ', reaches level' : ', does not reach level')),
-        h('div', {}, Q(Math.abs(r.qty) - r.remaining) + ' of ' + Q(Math.abs(r.qty)) + ' ' + UL() + (sec.type === 'cut' ? ' removed' : ' placed')), h('div', {}, (sec.type === 'cut' ? 'Going to: ' : 'Coming from: ') + (list(sec.type === 'cut' ? r.to : r.from) || 'nowhere')));
+        h('div', {}, Q(Math.abs(r.qty) - r.remaining) + ' of ' + Q(Math.abs(r.qty)) + ' ' + RL() + (sec.type === 'cut' ? ' removed' : ' placed')), h('div', {}, (sec.type === 'cut' ? 'Going to: ' : 'Coming from: ') + (list(sec.type === 'cut' ? r.to : r.from) || 'nowhere')));
     }
     tip.hidden = false;
     const pr = $('tcbody').getBoundingClientRect(), cr = $('tcchart').getBoundingClientRect();
@@ -837,6 +857,124 @@
   })();
 
   // ---------- fleet and plant tab (B1 to B6) ----------
+  // ---------- Cost & carbon (E1, E2) and the programme export (E4) ----------
+  function exportProgramme() { if (res) download(slug() + '_programme.csv', '﻿' + M.programmeCSV(scn, res), 'text/csv'); }
+  function renderCommercial() {
+    const body = $('tabbody'); body.replaceChildren();
+    const md = scn.modules, pane = h('div', { id: 'compane' });
+    const hint = t => h('p', { class: 'hint' }, t);
+    const fld = (label, obj, key, cellId, o) => {
+      o = o || {};
+      const inp = h('input', { type: o.type || 'number', value: obj[key], step: 'any', 'data-cell': cellId });
+      inp.addEventListener('input', () => { obj[key] = o.type === 'text' ? inp.value : inp.value === '' ? NaN : +inp.value; changed(false); });
+      return h('div', {}, h('label', {}, label), inp);
+    };
+    const sel = (label, obj, key, opts, cellId) => h('div', {}, h('label', {}, label), h('select', { 'data-cell': cellId, onchange: ev => { obj[key] = ev.target.value; recompute(true); } }, opts.map(o => h('option', { value: o[0], selected: obj[key] === o[0] }, o[1]))));
+    const card = (id, title, kids) => h('div', { class: 'group' }, h('h4', {}, id + '  ' + title), kids);
+    if (modOn('E1')) { const b = md.E1; pane.append(card('E1', 'Cost', [
+      h('div', { class: 'settings' }, fld('Lorry hire (£ per hour)', b, 'lorryRate', 'mod:E1:lorryRate'), fld('Excavator hire (£ per hour)', b, 'excavatorRate', 'mod:E1:excavatorRate'), fld('Receiving plant hire (£ per hour)', b, 'receivingRate', 'mod:E1:receivingRate'),
+        fld('Fuel (£ per litre)', b, 'fuelPrice', 'mod:E1:fuelPrice'), fld('Labour (£ per plant-hour)', b, 'labourRate', 'mod:E1:labourRate'), sel('Lorries are charged for', b, 'basis', [['used', 'Busy hours only'], ['standing', 'The whole fixed fleet, every working day']], 'mod:E1:basis')),
+      hint('Plant hours come from the run: a lorry is busy from the start of loading until it is back at the loader; excavators work while loading; receiving plant works at the receiving rate (B4, or 300 t/h). Fuel comes from the burn rates under Carbon (or sensible defaults). Labour is one operator per machine hour. Tip fees and purchases are the off-site gate charges (A4) and stockpile handling (A5). Standing hire charges a fixed fleet (B1 or B2) for every working day of the programme.')])); }
+    if (modOn('E2')) { const b = md.E2; pane.append(card('E2', 'Carbon', [
+      h('div', { class: 'settings' }, fld('Lorry fuel burn (litres per hour)', b, 'lorryLPerHour', 'mod:E2:lorryLPerHour'), fld('Excavator fuel burn (litres per hour)', b, 'excavatorLPerHour', 'mod:E2:excavatorLPerHour'), fld('Receiving plant fuel burn (litres per hour)', b, 'receivingLPerHour', 'mod:E2:receivingLPerHour'), fld('Carbon factor (kg CO₂e per litre of diesel)', b, 'kgCO2PerLitre', 'mod:E2:kgCO2PerLitre')),
+      hint('Litres burned = plant hours × litres per hour. Carbon = litres × the factor (2.68 kg per litre is the usual UK figure for diesel). The optimiser can minimise cost or carbon once these are on.')])); }
+    if (modOn('E4')) { const b = md.E4; pane.append(card('E4', 'Programme export', [
+      h('div', { class: 'settings' }, sel('Date format', b, 'dateFormat', [['uk', 'UK (dd/mm/yyyy)'], ['iso', 'ISO (yyyy-mm-dd)']], 'mod:E4:dateFormat'), fld('Activity ID prefix', b, 'idPrefix', 'mod:E4:idPrefix', { type: 'text' })),
+      h('p', {}, h('button', { class: 'primary', onclick: exportProgramme }, 'Export programme CSV')),
+      hint('One row per section with soil: activity ID, name, duration in days, start, finish and percent complete. P6 and MS Project both let you map the columns when you import a CSV: Activity ID or ID, Activity Name or Name, Original Duration or Duration, Start, Finish.')])); }
+    body.append(pane);
+  }
+
+  // ---------- E5 import ----------
+  function importPanel() {
+    const det = h('details', { class: 'group', id: 'imppanel' }, h('summary', {}, 'E5  Import sections from a CSV file or a spreadsheet'));
+    const ta = h('textarea', { id: 'impText', rows: 6, style: 'width:100%', placeholder: 'Paste rows copied from a spreadsheet here, or choose a CSV file. The first row should name the columns (use the template to see them).' });
+    const out = h('div', { id: 'impOut' }); let parsed = null;
+    const check = () => {
+      parsed = M.parseSections(ta.value, scn); out.replaceChildren();
+      parsed.errors.forEach(x => out.append(h('span', { class: 'msg warn' }, x.text)));
+      parsed.warnings.forEach(x => out.append(h('span', { class: 'msg info' }, x.text)));
+      out.append(h('p', { class: 'hint' }, parsed.sections.length + ' of ' + parsed.rows + ' rows are ready to import' + (parsed.errors.length ? '; the rows with problems are skipped.' : '.') + ' Quantities are read in ' + (scn.settings.units === 'm3' ? 'm³' : 'tonnes') + ', the units you work in.'));
+    };
+    const apply = mode => { if (!parsed || !parsed.sections.length) { check(); return; } M.applyImport(scn, parsed, mode); parsed = null; recompute(true); };
+    const file = h('input', { type: 'file', accept: '.csv,.txt,text/csv', onchange: ev => { const f = ev.target.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => { ta.value = String(rd.result).replace(/^﻿/, ''); check(); }; rd.readAsText(f); } });
+    det.append(h('p', { class: 'hint' }, 'Columns: name, length (m), soil quantity (+ cut, − fill), loads start from, loads start to, earliest tipping date, max loaders, working days. Only the length and quantity are required.'),
+      h('p', {}, h('button', { onclick: () => download('earthmove_sections_template.csv', '﻿' + M.sectionsCSV(scn, true), 'text/csv') }, 'Download template'), ' ', h('button', { onclick: () => download(slug() + '_sections.csv', '﻿' + M.sectionsCSV(scn), 'text/csv') }, 'Export the current table'), ' ', file),
+      ta, h('p', {}, h('button', { onclick: check }, 'Check'), ' ', h('button', { class: 'primary', onclick: () => apply('replace') }, 'Replace the sections table'), ' ', h('button', { onclick: () => apply('append') }, 'Add to the table')), out);
+    return det;
+  }
+
+  // ---------- Actual progress (E6) ----------
+  function renderActuals() {
+    const body = $('tabbody'); body.replaceChildren();
+    const b = scn.modules.E6, rows = b.actuals.map((x, k) => h('tr', {}, h('td', {}, h('input', { type: 'date', value: x.date, 'data-cell': 'mod:E6:actual' + k + 'd', onchange: ev => { x.date = ev.target.value; recompute(true); } })), h('td', {}, h('input', { type: 'number', value: x.tonnes, step: 'any', 'data-cell': 'mod:E6:actual' + k + 't', oninput: ev => { x.tonnes = ev.target.value === '' ? NaN : +ev.target.value; changed(false); } })),
+      h('td', {}, h('button', { class: 'icon', title: 'Remove', onclick: () => { b.actuals = b.actuals.filter(q => q !== x); recompute(true); } }, '✕'))));
+    body.append(h('h3', {}, 'Actual progress'), h('p', { class: 'hint' }, 'Enter the tonnes actually moved (placed in fills) on each day. The plan is compared with the actuals, and the finish is re-forecast from where the job has got to.'),
+      h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Tonnes moved that day', ''].map(x => h('th', {}, x)))), h('tbody', {}, rows))),
+      h('p', {}, h('button', { 'data-cell': 'mod:E6:add', onclick: () => { const last = b.actuals[b.actuals.length - 1], d = last && E.parseISO(last.date) !== null ? E.dayToISO(E.parseISO(last.date) + 1) : scn.settings.startDate; b.actuals.push({ id: M.newId(), date: d, tonnes: 0 }); recompute(true); } }, '+ Add a day')));
+    if (!res) { body.append(h('div', { class: 'note err' }, 'Fix the problems under Messages first.')); return; }
+    const an = M.actualsAnalysis(scn, res); if (!an.length) { body.append(h('p', { class: 'hint' }, 'No actuals entered yet.')); return; }
+    const fc = M.reforecast(scn, res), stat = (v, l) => h('div', { class: 'stat' }, h('b', {}, v), h('span', {}, l)), sg = v => (v > 0 ? '+' : v < 0 ? '−' : '') + Q(Math.abs(v)) + ' ' + RL();
+    body.append(h('h3', {}, 'Planned versus actual'), h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Actual that day (' + RL() + ')', 'Actual to date (' + RL() + ')', 'Planned to date (' + RL() + ')', 'Variance'].map((c, i) => h('th', { class: i ? 'num' : '' }, c)))),
+      h('tbody', {}, an.map(x => h('tr', {}, h('td', {}, E.fmtDay(E.parseISO(x.date))), h('td', { class: 'num' }, Q(x.actual)), h('td', { class: 'num' }, Q(x.actualCum)), h('td', { class: 'num' }, Q(x.plannedCum)), h('td', { class: 'num', style: 'color:var(' + (x.variance < -0.5 ? '--err' : '--good, #2a7d3f') + ')' }, sg(x.variance))))))));
+    if (fc) body.append(h('h3', {}, 'Re-forecast from today’s position'), h('div', { class: 'stats' }, stat(E.fmtDay(E.parseISO(fc.asOf)), 'Actuals up to'), stat(sg(fc.variance), 'Ahead (+) or behind (−) the plan'), stat(fc.plannedEnd, 'Planned finish'),
+      stat(fc.finished ? 'Finished' : fc.forecastEnd, 'Re-forecast finish'), stat(fc.finished ? '–' : fc.lagDays === 0 ? 'On programme' : Math.abs(fc.lagDays) + ' day' + (Math.abs(fc.lagDays) === 1 ? '' : 's') + (fc.lagDays > 0 ? ' late' : ' early'), 'Against the plan')),
+      h('p', { class: 'hint' }, 'The forecast takes the plan’s state at the point where it had placed the same tonnage as the actuals, then runs the remaining soil from the day after the last actual with the ordinary dispatch.'));
+  }
+
+  // ---------- Mass haul diagram (E3) ----------
+  function drawMH(cv, W0, H0) {
+    cv = cv || $('mhcanvas'); if (!cv || !res) return;
+    if (!COL) colours();
+    let ctx; if (W0) { cv.width = W0; cv.height = H0; ctx = cv.getContext('2d'); } else ctx = size(cv);
+    const W = W0 || cv.clientWidth, H = H0 || cv.clientHeight, mh = E.massHaul(res, S.t, ser), pl = 46, pr = 12, pt = 18, pb = 26;
+    const vals = mh.plan.concat(mh.now, [0]), lo = Math.min(...vals), hi = Math.max(...vals), span = Math.max(1, hi - lo);
+    const X = x => pl + x / res.P.total * (W - pl - pr), Y = v => pt + (hi - v) / span * (H - pt - pb);
+    ctx.clearRect(0, 0, W, H); ctx.fillStyle = COL.panel || '#fff'; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = COL.line; ctx.fillStyle = COL.mute; ctx.font = '10px system-ui'; ctx.lineWidth = 1;
+    const step = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000].map(x => x * UF()).find(x => span / UF() / x <= 6) || 1e6;
+    for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) { ctx.beginPath(); ctx.moveTo(pl, Y(v)); ctx.lineTo(W - pr, Y(v)); ctx.stroke(); ctx.fillText(fmt(v / UF()), 4, Y(v) + 3); }
+    res.P.chain.slice(0, res.P.n).forEach(x => { const px = X(x); ctx.beginPath(); ctx.moveTo(px, pt); ctx.lineTo(px, H - pb); ctx.strokeStyle = rgba(COL.line, 0.5); ctx.stroke(); });
+    ctx.strokeStyle = COL.ink; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(pl, Y(0)); ctx.lineTo(W - pr, Y(0)); ctx.stroke();
+    const line = (ys, col, w, dash) => { ctx.strokeStyle = col; ctx.lineWidth = w; ctx.setLineDash(dash || []); ctx.beginPath(); ys.forEach((v, i) => (i ? ctx.lineTo(X(mh.xs[i]), Y(v)) : ctx.moveTo(X(mh.xs[i]), Y(v)))); ctx.stroke(); ctx.setLineDash([]); };
+    line(mh.plan, COL.accent2, 2, [6, 4]); line(mh.now, COL.accent, 2.5);
+    ctx.fillStyle = COL.mute; ctx.fillText('Chainage 0', pl, H - 8); ctx.fillText((res.P.total / 1000).toFixed(1) + ' km', W - pr - 40, H - 8); ctx.fillText('cumulative cut − fill (' + RL() + ')', pl + 4, 11);
+  }
+  function renderMassHaul() {
+    const body = $('tabbody'); body.replaceChildren();
+    body.append(h('p', { class: 'hint' }, 'Cumulative cut minus fill along the road. The curve rises over a cut and falls over a fill; where it returns to the line the soil balances within that stretch, and the last value is the surplus (+) or shortage (−) of the whole job. The dashed line is the start; the solid line is the soil still to move at the time shown above.'),
+      h('canvas', { id: 'mhcanvas', style: 'width:100%;height:280px;border:1px solid var(--line);border-radius:6px' }));
+    if (!res) body.append(h('div', { class: 'note err' }, 'Fix the problems under Messages first.'));
+    drawMH();
+  }
+
+  // ---------- reporting (E7): printable summary and replay mode ----------
+  function setReplay(on) { document.body.classList.toggle('replay', !!on); $('replayExit').hidden = !on; S.dirty = true; }
+  function buildReport() {
+    let box = $('report'); if (!box) { box = h('div', { id: 'report' }); document.body.append(box); }
+    box.replaceChildren();
+    const title = ((scn.modules.E7 || {}).title || 'Earthmove summary'), stat = (v, l) => h('tr', {}, h('th', {}, l), h('td', {}, v));
+    box.append(h('h1', {}, title), h('p', {}, scn.name + ' — printed ' + new Date().toLocaleDateString('en-GB')), h('p', { class: 'badge' }, MOD.badgeText(scn) + '. ' + (planText() || 'Dispatch: nearest available destination.')));
+    if (!res) { box.append(h('p', {}, 'The model has problems that stop it running, so there are no results to print.')); return box; }
+    const s = res.summary, P = res.P, rows = [stat(s.completion === null ? 'Not complete' : E.fmtDay(P.startDay + s.completionDay), 'Overall completion'), stat(fmt(s.moves), 'Movements'), stat(Q(s.tonnesMoved) + ' ' + RL(), 'Soil moved'), stat(fmt(s.tonneKm) + ' t·km', 'Total tonne-km'), stat((s.utilisation * 100).toFixed(1) + '%', 'Average use of the daily movement limit')];
+    const cc = (modOn('E1') || modOn('E2')) ? E.costCarbon(scn, res) : null;
+    if (cc && cc.total !== undefined) rows.push(stat('£' + fmt(cc.total) + ' (£' + (cc.perTonne || 0).toFixed(2) + ' a tonne)', 'Total cost'));
+    if (cc && cc.co2t !== null) rows.push(stat(cc.co2t.toFixed(1) + ' t CO₂e', 'Carbon'));
+    if (modOn('D3')) { const lt = E.lateness(scn, res); if (lt.length) rows.push(stat(lt.filter(x => x.late).length + ' of ' + lt.length, 'Sections late against their target date')); }
+    const img = (cv, alt) => { try { return h('img', { src: cv.toDataURL('image/png'), alt, style: 'width:100%;margin:6px 0' }); } catch (e) { return h('p', { class: 'hint' }, '(' + alt + ' could not be drawn)'); } };
+    const mhc = document.createElement('canvas'); if (modOn('E3')) drawMH(mhc, 900, 240);
+    const kids = [h('table', { class: 'rep' }, h('tbody', {}, rows)), h('h2', {}, 'The road'), img($('road'), 'The road'),
+      modOn('E8') && TC.layer ? [h('h2', {}, 'Time-chainage'), img($('tcchart'), 'Time-chainage chart')] : null,
+      h('h2', {}, 'Movements per day'), img($('chart'), 'Movements per day'), modOn('E3') ? [h('h2', {}, 'Mass haul'), img(mhc, 'Mass haul diagram')] : null,
+      h('h2', {}, 'Sections'), h('table', { class: 'rep' }, h('thead', {}, h('tr', {}, ['Section', 'Type', 'Starting quantity (' + RL() + ')', 'Reaches level'].map(c => h('th', {}, c)))),
+        h('tbody', {}, res.sections.map((r, i) => h('tr', {}, h('td', {}, P.names[i]), h('td', {}, r.type === 'cut' ? 'Cut' : r.type === 'fill' ? 'Fill' : 'No soil'), h('td', {}, r.qty ? (r.qty > 0 ? '+' : '\u2212') + Q(Math.abs(r.qty)) : '0'), h('td', {}, r.type === 'none' ? '' : (r.remaining > 0.5 ? 'Not reached' : levelDate(r.levelTime)))))))];
+    box.append(...kids.flat(Infinity).filter(x => x != null && x !== false)); // native append would print null and arrays as text
+    return box;
+  }
+  function printReport() { buildReport(); window.print(); }
+  $('replayExit').onclick = () => setReplay(false);
+  $('btnReplay').onclick = () => setReplay(true);
+
   // ---------- Weather & risk (D1, D2) ----------
   const RISK = { state: 'idle', frac: 0, result: null, worker: null, sig: '', error: '', cancelFlag: false };
   const riskSig = () => E.sigOf(scn) + JSON.stringify((scn.modules || {}).D2 || {});
@@ -1009,7 +1147,7 @@
     const cellIn = (obj, key, cellId, type, w) => { const inp = h('input', { type: type || 'number', value: obj[key], step: 'any', 'data-cell': cellId, style: w ? 'min-width:' + w : '' }); inp.addEventListener('input', () => { obj[key] = type === 'text' ? inp.value : inp.value === '' ? NaN : +inp.value; changed(false); }); return h('td', {}, inp); };
     const mats = scn.materials, tot = scn.sections.reduce((a, x) => a + (+x.lengthM || 0), 0);
     const used = id => scn.sections.some(x => x.lines.some(l => l.material === id));
-    if (S.screen === 'main' && scn.settings.units === 'm3' && (modOn('A1') || modOn('A3'))) pane.append(h('div', { class: 'note' }, 'Quantities are entered in m³ at each material’s own density (and fill as compacted m³ when A1 is on). The results panels show m³ at the site density, so use the tonnes figures in the CSV exports for exact weights.'));
+    if (scn.settings.units === 'm3' && (modOn('A1') || modOn('A3'))) pane.append(h('div', { class: 'note' }, 'Quantities are entered in m³ at each soil type\u2019s own density (and fill as compacted m³ when A1 is on). Results are shown in tonnes, which is exact because every soil type has its own density.'));
     if (modOn('A1')) pane.append(card('A1', 'Bulking and compaction', [
       h('div', { class: 'settings' }, fld('Lorry body volume (loose m³)', md.A1, 'bodyM3', 'mod:A1:bodyM3')),
       hint('A load is limited by the lorry body as well as its payload: body volume ÷ bulking factor, times the soil’s density, is the most bank soil it can carry. A vehicle type can have its own body volume (B2). Cut quantities are in-situ (bank) soil; fill quantities are compacted.')]));
@@ -1167,6 +1305,8 @@
       ['Peak trucks needed in a day', String(B.peakTrucks), String(A.peakTrucks), diff(B.peakTrucks, A.peakTrucks, 0, '', true)],
       ['Truck-hours', fmt(B.truckHours), fmt(A.truckHours), diff(B.truckHours, A.truckHours, 0, '', true)]
     ];
+    if (B.cost !== undefined && A.cost !== undefined) rows.push(['Total cost (\u00a3)', fmt(B.cost), fmt(A.cost), diff(B.cost, A.cost, 0, '', true)]);
+    if (B.co2t != null && A.co2t != null) rows.push(['Carbon (tCO\u2082e)', B.co2t.toFixed(1), A.co2t.toFixed(1), diff(B.co2t, A.co2t, 1, '', true)]);
     if (B.fleetDelayMin || A.fleetDelayMin) rows.push(['Hours loading held up for a lorry', fmt(B.fleetDelayMin / 60), fmt(A.fleetDelayMin / 60), diff(B.fleetDelayMin / 60, A.fleetDelayMin / 60, 0, '', true)]);
     if (B.tipWaitMin || A.tipWaitMin) rows.push(['Hours queuing to tip', fmt(B.tipWaitMin / 60), fmt(A.tipWaitMin / 60), diff(B.tipWaitMin / 60, A.tipWaitMin / 60, 0, '', true)]);
     return rows;
@@ -1186,7 +1326,8 @@
       updateOptProgress(); return;
     }
     const status = E.planStatus(scn);
-    const goalSel = h('select', { onchange: ev => (OPT.goal = ev.target.value) }, Object.keys(GOALS).map(k => h('option', { value: k, selected: OPT.goal === k }, GOALS[k])));
+    if ((OPT.goal === 'cost' && !modOn('E1')) || (OPT.goal === 'carbon' && !modOn('E2'))) OPT.goal = 'completion';
+    const goalSel = h('select', { onchange: ev => (OPT.goal = ev.target.value) }, Object.keys(GOALS).filter(k => (k !== 'cost' || modOn('E1')) && (k !== 'carbon' || modOn('E2'))).map(k => h('option', { value: k, selected: OPT.goal === k }, GOALS[k])));
     const effSel = h('select', { onchange: ev => (OPT.effort = ev.target.value) }, Object.keys(EFFORT).map(k => h('option', { value: k, selected: OPT.effort === k }, EFFORT[k][0])));
     el.append(h('div', { class: 'optrow' }, h('div', {}, h('label', {}, 'Goal'), goalSel), h('div', {}, h('label', {}, 'Search time'), effSel), h('button', { class: 'primary', onclick: startOpt }, OPT.state === 'done' ? 'Run again' : 'Start')));
     el.append(h('p', { class: 'hint' }, 'The search changes which source feeds which destination, in what order, and who gets priority when the daily limit bites. It never changes your inputs, and every candidate is checked by the full simulation, so hours, days, loaders, opening dates and the daily limit are always respected.'));
@@ -1253,7 +1394,8 @@
   function scenStats(sc) {
     sc = M.normalise(JSON.parse(JSON.stringify(sc)));
     if (M.validate(sc).some(i => i.level === 'error')) return null;
-    const r = E.simulate(sc), p = Optim.pack(r);
+    const r = E.simulate(sc), p = Optim.pack(r), cc = E.costCarbon(sc, r);
+    if (cc) { if (cc.total !== undefined) p.cost = cc.total; if (cc.co2t !== null) p.co2t = cc.co2t; }
     p.setup = MOD.badgeText(sc); p.plan = E.planStatus(sc) === 'on' ? GOALS[sc.plan.goal] : 'nearest available';
     p.completionTxt = p.completion === null ? 'not complete' : E.fmtDay(p.startDay + p.completionDay);
     return p;
@@ -1299,6 +1441,8 @@
       ['Trucks to cover 95% of days', String(A.p95Trucks), String(B.p95Trucks), d(A.p95Trucks, B.p95Trucks, 0, '', true)],
       ['Truck-hours', fmt(A.truckHours), fmt(B.truckHours), d(A.truckHours, B.truckHours, 0, '', true)]
     ];
+    if (A.cost !== undefined && B.cost !== undefined) rows.push(['Total cost (\u00a3)', fmt(A.cost), fmt(B.cost), d(A.cost, B.cost, 0, '', true)]);
+    if (A.co2t != null && B.co2t != null) rows.push(['Carbon (tCO\u2082e)', A.co2t.toFixed(1), B.co2t.toFixed(1), d(A.co2t, B.co2t, 1, '', true)]);
     if (A.fleetSize || B.fleetSize) rows.push(['Fleet size', A.fleetSize ? fmt(A.fleetSize) : 'unlimited', B.fleetSize ? fmt(B.fleetSize) : 'unlimited', ['', '']]);
     if (A.fleetDelayMin || B.fleetDelayMin) rows.push(['Hours loading held up for a lorry', fmt(A.fleetDelayMin / 60), fmt(B.fleetDelayMin / 60), d(A.fleetDelayMin / 60, B.fleetDelayMin / 60, 0, '', true)]);
     if (A.tipWaitMin || B.tipWaitMin) rows.push(['Hours queuing to tip', fmt(A.tipWaitMin / 60), fmt(B.tipWaitMin / 60), d(A.tipWaitMin / 60, B.tipWaitMin / 60, 0, '', true)]);
@@ -1318,26 +1462,26 @@
     if (!res) return; const P = res.P, s = res.summary;
     let out = '﻿' + csvHeader('Earthmove results');
     out += csvRow(['Overall completion', s.completion === null ? 'not complete' : E.fmtDay(P.startDay + s.completionDay)]);
-    out += csvRow(['Movements', s.moves]) + csvRow(['Quantity moved (' + UL() + ')', Math.round(s.tonnesMoved / UF())]) + csvRow(['Tonne-km', Math.round(s.tonneKm)]) + csvRow(['Units', scn.settings.units === 'm3' ? 'm3 (density ' + UF() + ' t per m3)' : 'tonnes']);
+    out += csvRow(['Movements', s.moves]) + csvRow(['Quantity moved (' + RL() + ')', Math.round(s.tonnesMoved / UF())]) + csvRow(['Tonne-km', Math.round(s.tonneKm)]) + csvRow(['Units', scn.settings.units === 'm3' ? 'm3 (density ' + UF() + ' t per m3)' : 'tonnes']);
     out += csvRow(['Avg utilisation of daily limit %', (s.utilisation * 100).toFixed(1)]) + csvRow(['Idle working days', s.idleDays]);
     out += csvRow(['Peak trucks needed in a day', trucks.peak]) + csvRow(['Trucks to cover 95% of working days', trucks.p95]) + csvRow(['Median daily peak trucks', trucks.median]) + csvRow(['Total truck-hours', Math.round(trucks.truckHours)]) + csvRow(['Average truck cycle min', Math.round(trucks.avgCycleMin)]);
-    const u = UL();
+    const u = RL();
     out += csvRow(['Total cut ' + u, Math.round(s.totalCut / UF())]) + csvRow(['Total fill ' + u, Math.round(s.totalFill / UF())]) + csvRow(['Unplaced surplus ' + u, Math.round(s.unplacedSurplus / UF())]) + csvRow(['Unfilled shortfall ' + u, Math.round(s.unfilled / UF())]) + csvRow([]);
-    out += csvRow(['Section', 'Type', 'Starting quantity ' + UL()].concat(modOn('E8') ? ['Earthworks start'] : [], ['Reaches level', 'Remaining ' + UL(), 'Soil went to / came from']));
-    const list = o => Object.keys(o).map(k => P.names[+k] + ' ' + Math.round(o[k] / UF()) + ' ' + UL()).join('; ');
+    out += csvRow(['Section', 'Type', 'Starting quantity ' + RL()].concat(modOn('E8') ? ['Earthworks start'] : [], ['Reaches level', 'Remaining ' + RL(), 'Soil went to / came from']));
+    const list = o => Object.keys(o).map(k => P.names[+k] + ' ' + Math.round(o[k] / UF()) + ' ' + RL()).join('; ');
     res.sections.forEach((r, ri) => (out += csvRow([r.name, r.type, Math.round(r.qty / UF())].concat(modOn('E8') ? [TC.data && TC.data.sections[ri].start !== null ? levelDate(TC.data.sections[ri].start) : ''] : [], [r.type === 'none' ? '' : r.remaining > 0.5 ? 'not reached' : levelDate(r.levelTime), Math.round(r.remaining / UF()), r.type === 'cut' ? list(r.to) : list(r.from)]))));
     download(slug() + '_results.csv', out, 'text/csv');
   }
   function exportDaily() {
     if (!res) return; const L = res.log, P = res.P, tn = [];
     for (let k = 0; k < res.n; k++) { const d = Math.floor(L.start[k] / 1440); tn[d] = (tn[d] || 0) + L.t[k]; }
-    let out = '﻿' + csvHeader('Earthmove daily summary') + csvRow(['Date', 'Weekday', 'Movements', (UL() === 't' ? 'Tonnes' : 'm3') + ' loaded', 'Peak trucks needed']);
+    let out = '﻿' + csvHeader('Earthmove daily summary') + csvRow(['Date', 'Weekday', 'Movements', (RL() === 't' ? 'Tonnes' : 'm3') + ' loaded', 'Peak trucks needed']);
     for (let d = 0; d < trucks.dayPeak.length; d++) out += csvRow([E.fmtDay(P.startDay + d), E.DOW_NAMES[E.dowOf(P.startDay + d)], res.daily[d] || 0, Math.round((tn[d] || 0) / UF()), trucks.dayPeak[d]]);
     download(slug() + '_daily.csv', out, 'text/csv');
   }
   function exportLog() {
     if (!res) return; const L = res.log, P = res.P;
-    let out = '﻿' + csvHeader('Earthmove movement log') + csvRow(['Movement', 'From', 'To', UL() === 't' ? 'Tonnes' : 'm3', 'Distance km', 'Loading starts', 'Departs', 'Tipped'].concat(res.mlog ? ['Soil', 'Tonnes (exact)'] : []));
+    let out = '﻿' + csvHeader('Earthmove movement log') + csvRow(['Movement', 'From', 'To', RL() === 't' ? 'Tonnes' : 'm3', 'Distance km', 'Loading starts', 'Departs', 'Tipped'].concat(res.mlog ? ['Soil', 'Tonnes (exact)'] : []));
     for (let k = 0; k < res.n; k++) out += csvRow([k + 1, P.names[L.src[k]], P.names[L.dst[k]], +(L.t[k] / UF()).toFixed(3), (E.dist(P, L.src[k], L.dst[k]) / 1000).toFixed(3), E.fmtTime(L.start[k], P.startDay), E.fmtTime(L.depart[k], P.startDay), E.fmtTime(L.tip[k], P.startDay)].concat(res.mlog ? [matName(res.mlog.mat[k]), +L.t[k].toFixed(3)] : []));
     download(slug() + '_movement_log.csv', out, 'text/csv');
   }
@@ -1385,13 +1529,14 @@
     const q = {}; location.hash.slice(1).split('&').forEach(p => { const [k, v] = p.split('='); if (k) q[k] = v; });
     if (q.theme) { try { localStorage.setItem('earthmove.theme', q.theme); } catch (e) { } applyTheme(q.theme); }
     if (q.e8) { scn.setup.modules.E8 = true; recompute(true); }
+    if (q.replay) { scn.setup.modules.E7 = true; recompute(true); setReplay(true); }
     if (q.example && M.EXAMPLES[q.example]) setScenario(M.EXAMPLES[q.example]());
     if (q.units) { M.setUnits(scn, q.units); recompute(true); }
     if (q.t && res) seek(+q.t); if (q.zoom) S.zoom = +q.zoom; if (q.x0) S.x0 = +q.x0;
     if (q.tab) { S.tab = q.tab; renderTabs(true); } if (q.screen) showScreen(q.screen);
   })();
   requestAnimationFrame(frame);
-  window.__earthmove = { get scn() { return scn; }, get res() { return res; }, S, recompute, setScenario, geom: () => geom(), drawTC, levelDate,
+  window.__earthmove = { buildReport, setReplay, get scn() { return scn; }, get res() { return res; }, S, recompute, setScenario, geom: () => geom(), drawTC, levelDate,
     tc: () => { const e = tcEnv(); return { win: e.win, data: TC.data, down: e.st.timeDown, y: d => e.tg.dayToY(d), day: y => e.tg.yToDay(y), pt: e.tg.pt, pb: e.tg.pb }; },
     tcSkip: sk => { TC.skip = sk; }, tcProf: () => { TC.prof = true; TC.layer = null; drawTC(); drawTC(); TC.layer = null; drawTC(); return { stages: TC.profOut, draw: TC.profDraw }; }, tcPng: () => { drawTC(); return $('tcchart').toDataURL('image/png'); } };
 })();

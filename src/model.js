@@ -605,7 +605,16 @@
     o.modules.D2.runs = 200; o.modules.D2.breakdownPct = 2;
     return normalise(o);
   }
-  const EXAMPLES = { simple: exampleSimple, modules: exampleModules, materials: exampleMaterials, site: exampleSite, risk: exampleRisk };
+  // Sixth example: cost, carbon, the mass haul diagram, the programme export, actual progress and reporting on the 8 km road.
+  function exampleCommercial() {
+    const o = exampleSimple();
+    o.name = 'Commercial demo: cost, carbon, mass haul, actuals and reporting on the 8 km road';
+    o.setup.level = 'custom';
+    ['E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7'].forEach(id => (o.setup.modules[id] = true));
+    o.modules.E6.actuals = [['2027-01-11', 3200], ['2027-01-12', 3800], ['2027-01-13', 3600], ['2027-01-14', 3900], ['2027-01-15', 3500]].map(([date, tonnes], k) => ({ id: 'act' + k, date, tonnes }));
+    return normalise(o);
+  }
+  const EXAMPLES = { simple: exampleSimple, modules: exampleModules, materials: exampleMaterials, site: exampleSite, risk: exampleRisk, commercial: exampleCommercial };
 
-  return { programmeCSV, sectionsCSV, parseSections, applyImport, actualsAnalysis, plannedCumulative, reforecast, VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, exampleSimple, exampleModules, exampleMaterials, exampleSite, exampleRisk };
+  return { programmeCSV, sectionsCSV, parseSections, applyImport, actualsAnalysis, plannedCumulative, reforecast, VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, exampleSimple, exampleModules, exampleMaterials, exampleSite, exampleRisk, exampleCommercial };
 });

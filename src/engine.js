@@ -1279,6 +1279,19 @@
     }
     return out;
   }
+  // ---------- mass haul diagram (E3) ----------
+  // Cumulative (cut - fill) along the chainage, in tonnes: xs = chainage at each section boundary, plan = the starting curve, now = the curve at time t
+  // (remaining soil only), and balance = the net surplus (+) or shortage (-) of the whole road. A flat curve means cut and fill balance within that stretch.
+  function massHaul(res, t, ser) {
+    const P = res.P, n = P.n; ser = ser || buildSeries(res);
+    const xs = [0], plan = [0], now = [0]; let c0 = 0, c1 = 0;
+    for (let i = 0; i < n; i++) {
+      const q = P.qty[i]; c0 += q; c1 += q === 0 ? 0 : (q > 0 ? 1 : -1) * remainingAt(ser, i, t);
+      xs.push(P.chain[i] + P.len[i]); plan.push(c0); now.push(c1);
+    }
+    return { xs, plan, now, balance: c0 };
+  }
+
   // ---------- target dates (D3) ----------
   // For every section with a contract date: the day it reaches level, and how many days late (0 = on time). A section that never reaches level is late with daysLate null.
   function lateness(scn, res) {
@@ -1406,5 +1419,5 @@
   }
   function startedBy(res, t) { return upperBound(res.log.start, t); } // log.start is non-decreasing
 
-  return { costCarbon, mulberry, buildDayOff, lateness, ukHolidays, holidayList, DAY, parseISO, hm, dayToISO, fmtDay, fmtClock, fmtTime, dowOf, DOW_NAMES, netQty, lineFactor, lineTonnes, prepare, dist, travelMin, tripL, tripE, tripX, simulate, minCostFlow, sigOf, activePlan, planStatus, buildSeries, remainingAt, upperBound, startedBy, truckStats, trucksAt, nextActive, chartData };
+  return { massHaul, costCarbon, mulberry, buildDayOff, lateness, ukHolidays, holidayList, DAY, parseISO, hm, dayToISO, fmtDay, fmtClock, fmtTime, dowOf, DOW_NAMES, netQty, lineFactor, lineTonnes, prepare, dist, travelMin, tripL, tripE, tripX, simulate, minCostFlow, sigOf, activePlan, planStatus, buildSeries, remainingAt, upperBound, startedBy, truckStats, trucksAt, nextActive, chartData };
 });
