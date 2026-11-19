@@ -289,6 +289,34 @@
     // material layer: tonnes left on each cut line, in dig order (top-down), and the line being dug
     const M = cfg.mat, srcLeft = [], curLine = new Int32Array(nn);
     if (M) for (const i of P.srcs) srcLeft[i] = M.srcLines[i].map(l => l.t);
+    // A2: tonnes still needed on each fill line (in tonnes of its required class); freeNeed stays the section total
+    const needLine = [];
+    if (M && M.a2) for (const j of P.dsts) needLine[j] = M.dstLines[j].map(l => l.needT);
+    const ML = M ? { mat: [], sline: [], dline: [] } : null;
+    // Which fill line takes material m at fill j: a line that asks for exactly m first, then any line that accepts m. -1 = none.
+    function lineFor(j, m) {
+      const dl = M.dstLines[j], nl = needLine[j]; let any = -1;
+      for (let l = 0; l < dl.length; l++) if (nl[l] > EPS) { if (dl[l].req === m) return l; if (any < 0 && M.acc[dl[l].req][m]) any = l; }
+      return any;
+    }
+    const canTake = (j, m) => (M && M.a2 ? lineFor(j, m) >= 0 : freeNeed[j] > 0);
+    // tonnes of m that fill j can still take (A2: limited by the line it would go into, converted by occupied space)
+    function takeCap(j, m) {
+      if (!(M && M.a2)) return freeNeed[j];
+      const l = lineFor(j, m), req = M.dstLines[j][l].req;
+      return req === m ? needLine[j][l] : needLine[j][l] * M.occ[req] / M.occ[m];
+    }
+    const ordCache = {}, ptrCache = {};
+    function orderFor(i, m) { // nearest fill first; with A2 only fills that accept m, and fills asking for exactly m before the rest
+      if (!(M && M.a2)) return P.destOrder[i];
+      const key = i + '|' + m; let o = ordCache[key];
+      if (!o) {
+        const ex = j => (M.dstLines[j].some(l => l.req === m) ? 0 : 1);
+        o = ordCache[key] = P.dsts.filter(j => M.dstLines[j].some(l => M.acc[l.req][m]))
+          .sort((a, b) => ex(a) - ex(b) || Math.abs(P.mid[a] - P.mid[i]) - Math.abs(P.mid[b] - P.mid[i]) || a - b);
+      }
+      return o;
+    }
     const ptr = new Int32Array(nn); // first possibly-not-full destination per source (greedy)
     const L = { src: [], dst: [], t: [], start: [], depart: [], tip: [], bs: [], lorry: [] };
     const lastDepart = new Float64Array(nn).fill(-1), lastTip = new Float64Array(nn).fill(-1);
@@ -345,7 +373,7 @@
     // Choose a destination for a load leaving source i at departT on day `day` with a lorry of type ty.
     // Returns {j, arc}, or {wait: s} when no destination can take it yet (s = earliest loading start that would work:
     // a fill not open on arrival, or, with B4, a tipping queue longer than the allowed limit), or null.
-    function pick(i, departT, day, ty, svc, capT) {
+    function pick(i, departT, day, ty, svc, capT, mat) {
       const arcs = arcsBySrc[i];
       let minWait = Infinity;
       // can this load go to fill j now? returns tip end time, or sets minWait and returns -1
@@ -356,7 +384,7 @@
           return -1;
         }
         if (!recv) return 0;
-        const arr = day * DAY + departT + tr, ti = tipAt(j, arr, Math.min(capT, remSrc[i], freeNeed[j]));
+        const arr = day * DAY + departT + tr, ti = tipAt(j, arr, Math.min(capT, remSrc[i], M ? takeCap(j, mat) : freeNeed[j]));
         if (ti.ts - arr > recv.maxQ) { // queue too long: hold loading until it would be short enough
           const w = ti.mf - recv.maxQ - tr - svc - day * DAY;
           if (w < minWait) minWait = w;
@@ -367,20 +395,20 @@
       if (arcs) {
         let live = 0;
         for (const a of arcs) {
-          if (a.rem < EPS || freeNeed[a.to] <= 0) continue;
+          if (a.rem < EPS || !canTake(a.to, mat)) continue;
           live++;
           if (consider(a.to, tripL(P, ty, i, a.to)) >= 0) return { j: a.to, arc: a };
         }
         return live > 0 ? { wait: minWait } : null; // planned destinations unavailable for now, or plan finished for this source
       }
-      const order = P.destOrder[i];
-      let p = ptr[i];
-      while (p < order.length && freeNeed[order[p]] <= 0) p++;
-      ptr[i] = p;
+      const order = orderFor(i, mat), pkey = M && M.a2 ? i + '|' + mat : i;
+      let p = (M && M.a2 ? ptrCache[pkey] : ptr[i]) || 0;
+      while (p < order.length && !canTake(order[p], mat)) p++;
+      if (M && M.a2) ptrCache[pkey] = p; else ptr[i] = p;
       let bestJ = -1, bestTip = Infinity;
       for (let k = p; k < order.length; k++) {
         const j = order[k];
-        if (freeNeed[j] <= 0) continue;
+        if (!canTake(j, mat)) continue;
         const te = consider(j, tripL(P, ty, i, j));
         if (te < 0) continue;
         if (!recv) return { j, arc: null }; // nearest open destination
@@ -442,18 +470,18 @@
         if (fleetOn && rdyStale[best]) { freshen(best); continue; } // the winner's bound was stale: get its exact value and choose again
         const lorry = fleetOn ? rdyK[best] : -1;
         const ty = fleetOn ? types[lType[lorry]] : tCore;
-        let capT = ty.payload, lineIdx = -1;
+        let capT = ty.payload, lineIdx = -1, mat = null;
         if (M) { // one material per load: the first cut line with soil left, limited by the lorry body (A1: loose volume / bulking)
           const sl = srcLeft[best]; let c = curLine[best];
           while (c < sl.length && sl[c] <= EPS) c++;
           curLine[best] = c;
           if (c >= sl.length) { remSrc[best] = 0; continue; }
-          lineIdx = c; capT = Math.min(capT, sl[c]);
-          if (M.a1) { const mid = M.srcLines[best][c].m; capT = Math.min(capT, ty.body * M.rho[mid] / M.bulk[mid]); }
+          lineIdx = c; capT = Math.min(capT, sl[c]); mat = M.srcLines[best][c].m;
+          if (M.a1) capT = Math.min(capT, ty.body * M.rho[mat] / M.bulk[mat]);
         }
         const svc = svcMin(best, bestSlot, Math.min(capT, remSrc[best]));
         const departT = bestT + svc;
-        const pk = pick(best, departT, d, ty, svc, capT);
+        const pk = pick(best, departT, d, ty, svc, capT, mat);
         if (!pk || pk.wait !== undefined) {
           // Nowhere to tip yet. If a destination opens at midnight and a long trip can still reach it
           // after loading later today, hold this source until then; otherwise it is done for today.
@@ -464,7 +492,8 @@
           continue;
         }
         const j = pk.j;
-        let tonnes = Math.min(capT, remSrc[best], freeNeed[j]);
+        let tonnes = Math.min(capT, remSrc[best], M ? takeCap(j, mat) : freeNeed[j]);
+        let dLine = -1, consume = 0;
         if (pk.arc) tonnes = Math.min(tonnes, pk.arc.rem);
         const arrAbs = base + departT + tripL(P, ty, best, j);
         let tipAbs = arrAbs;
@@ -475,8 +504,14 @@
           const dur = Math.max(1, Math.round(tonnes * 60 / (recv.rate[j] / recv.bays[j]) / cfg.uRecv));
           tipAbs = ts + dur; bf[bi] = tipAbs; tipWaitMin += ts - arrAbs; if (ts - arrAbs > tipWaitMax) tipWaitMax = ts - arrAbs;
         }
-        remSrc[best] -= tonnes; freeNeed[j] -= tonnes; totalRem -= tonnes;
-        if (M) { const sl = srcLeft[best]; sl[lineIdx] -= tonnes; if (sl[lineIdx] < EPS) sl[lineIdx] = 0; }
+        consume = tonnes;
+        if (M && M.a2) { // place it in its fill line; a different class takes up space in proportion to its compacted volume
+          dLine = lineFor(j, mat); const req = M.dstLines[j][dLine].req;
+          if (req !== mat) consume = tonnes * M.occ[mat] / M.occ[req];
+          needLine[j][dLine] -= consume; if (needLine[j][dLine] < EPS) needLine[j][dLine] = 0;
+        }
+        remSrc[best] -= tonnes; freeNeed[j] -= consume; totalRem -= tonnes;
+        if (M) { const sl = srcLeft[best]; sl[lineIdx] -= tonnes; if (sl[lineIdx] < EPS) sl[lineIdx] = 0; ML.mat.push(mat); ML.sline.push(lineIdx); ML.dline.push(dLine); }
         if (pk.arc) pk.arc.rem -= tonnes;
         if (remSrc[best] < EPS) { totalRem -= remSrc[best]; remSrc[best] = 0; }
         if (freeNeed[j] < EPS) freeNeed[j] = 0;
@@ -521,7 +556,14 @@
       totalCut, totalFill, imbalance: totalCut - totalFill, unplacedSurplus, unfilled, complete, stuck,
       fleetSize: fleetOn ? cfg.fleetSize : null, fleetDelayMin, tipWaitMin, tipWaitMax
     };
-    if (noLog) return { P, log: null, n: moves, daily, sections: null, summary };
+    // material layer results, kept apart from the core summary so the core fields never change shape
+    let msum = null;
+    if (M) {
+      const unplacedByMat = {};
+      for (const i of P.srcs) srcLeft[i].forEach((t, l) => { if (t > EPS) unplacedByMat[M.srcLines[i][l].m] = (unplacedByMat[M.srcLines[i][l].m] || 0) + t; });
+      msum = { placedT: tonnesMoved, unplacedByMat };
+    }
+    if (noLog) return { P, log: null, n: moves, daily, sections: null, summary, msum };
 
     const sections = [];
     for (let i = 0; i < n; i++) {
@@ -540,7 +582,7 @@
     const reached = sections.filter(s => s.type !== 'none' && s.levelTime !== null);
     summary.completion = reached.length ? reached.reduce((mx, s) => Math.max(mx, s.levelTime), 0) : null;
     summary.completionDay = summary.completion === null ? null : Math.floor(summary.completion / DAY);
-    return { P, log: L, n: moves, daily, sections, summary };
+    return { P, log: L, n: moves, daily, sections, summary, msum, mlog: ML };
   }
 
   // ---------- time-chainage chart data (E8) ----------

@@ -106,7 +106,23 @@ function audit(name, scn) {
   // soil conservation
   const out = new Float64Array(P.n), inn = new Float64Array(P.n);
   for (let k = 0; k < r.n; k++) { out[L.src[k]] += L.t[k]; inn[L.dst[k]] += L.t[k]; }
-  for (let i = 0; i < P.n; i++) { if (out[i] > Math.max(P.qty[i], 0) + 1e-6) bad++; if (inn[i] > Math.max(-P.qty[i], 0) + 1e-6) bad++; }
+  const M = P.cfg.mat, byClass = !!(M && M.a2 && r.mlog);
+  for (let i = 0; i < P.n; i++) { if (out[i] > Math.max(P.qty[i], 0) + 1e-6) bad++; if (!byClass && inn[i] > Math.max(-P.qty[i], 0) + 1e-6) bad++; }
+  if (M && r.mlog) { // material layer: every load carries its line's material; class rules and per-line needs hold
+    const usedS = {}, usedD = {};
+    for (let k = 0; k < r.n; k++) {
+      const i = L.src[k], j = L.dst[k], m = r.mlog.mat[k], sl = r.mlog.sline[k], dl = r.mlog.dline[k];
+      if (!M.srcLines[i] || !M.srcLines[i][sl] || M.srcLines[i][sl].m !== m) { bad++; continue; }
+      usedS[i + ':' + sl] = (usedS[i + ':' + sl] || 0) + L.t[k];
+      if (M.a2 && M.dstLines[j]) {
+        const req = M.dstLines[j][dl].req;
+        if (!M.acc[req][m]) bad++;
+        usedD[j + ':' + dl] = (usedD[j + ':' + dl] || 0) + L.t[k] * (req === m ? 1 : M.occ[m] / M.occ[req]);
+      }
+    }
+    for (const key in usedS) { const [i, l] = key.split(':'); if (usedS[key] > M.srcLines[i][l].t + 1e-6) bad++; }
+    for (const key in usedD) { const [j, l] = key.split(':'); if (usedD[key] > M.dstLines[j][l].needT + 1e-6) bad++; }
+  }
   ok(bad === 0, name + ': ' + r.n + ' movements, ' + bad + ' violations');
   return r;
 }
@@ -665,6 +681,54 @@ console.log('\n35. A1 BULKING AND COMPACTION: lorry body volume limits the load;
   two.sections[0].lines = [{ material: 'general', qty: 30 }, { material: 'general', qty: 70 }];
   const t2 = Engine.simulate(two);
   ok(t2.log.t.join() === '20,10,20,20,20,10', 'two cut lines of 30 t and 70 t: loads 20, 10 (end of line one), 20, 20, 20, 10');
+}
+
+console.log('\n36. A2 MATERIAL CLASSES: loads carry one class and only go where the placement table allows');
+{
+  const near = (x, y) => Math.abs(x - y) < 1e-9;
+  // Road: a cut 0-1000 (mid 500) | b fill 1000-2000 (mid 1500) | c fill 2000-3000 (mid 2500). 5 kph: a to b 12 min, a to c 24 min.
+  const road = (cut, bNeed, cNeed, on, params) => {
+    const o = Model.defaults(); o.settings.startDate = '2027-01-11';
+    const mk = (id, lines) => { const x = Model.newSection(0); x.id = id; x.name = id; x.lengthM = 1000; x.lines = lines; x.maxLoaders = 1; return x; };
+    o.sections = [mk('a', cut), mk('b', [{ material: 'general', qty: -bNeed }]), mk('c', [{ material: 'topsoil', qty: -cNeed }])];
+    return withMods(Model.normalise(o), Object.assign({ A2: true }, on || {}), params);
+  };
+  const sc = road([{ material: 'topsoil', qty: 40 }, { material: 'general', qty: 60 }], 60, 40);
+  const r = audit('A2 topsoil and general', sc), tips = Array.from({ length: r.n }, (_, k) => hhmm(r.log.tip[k])).join(' ');
+  // hand: topsoil (40 t) is dug first and can only go to c: two loads. General (60 t) goes to b: three loads. Loads leave at 07:10 + 10k.
+  // c loads tip 24 min after leaving (07:34, 07:44); b loads 12 min after (07:42, 07:52, 08:02).
+  ok(r.log.dst.join() === '2,2,1,1,1' && tips === '07:34 07:44 07:42 07:52 08:02', 'order c, c, b, b, b; tips ' + tips);
+  ok(r.mlog.mat.join() === 'topsoil,topsoil,general,general,general' && r.summary.complete, 'each load carries one class, and the job completes');
+  const off = Engine.simulate(road([{ material: 'topsoil', qty: 40 }, { material: 'general', qty: 60 }], 60, 40, { A2: false }));
+  ok(off.log.dst.join() === '1,1,1,2,2', 'A2 off: classes are ignored and the nearest fill is used (b, b, b, c, c)');
+  // a class never leaves a mixed load: 30 t topsoil then 70 t general
+  const mixed = Engine.simulate(road([{ material: 'topsoil', qty: 30 }, { material: 'general', qty: 70 }], 70, 30));
+  ok(mixed.log.t.join() === '20,10,20,20,20,10' && mixed.mlog.mat.join() === 'topsoil,topsoil,general,general,general,general', 'topsoil 30 t gives loads of 20 + 10, then general 20, 20, 20, 10: never a mixed load');
+  // exact class first: topsoil may also go into the general fill, but the topsoil fill is preferred even though it is further away
+  const ex = road([{ material: 'topsoil', qty: 40 }, { material: 'general', qty: 60 }], 60, 40);
+  ex.modules.A2.accept.general.topsoil = true;
+  const e = audit('A2 topsoil also allowed in general fill', ex);
+  ok(e.log.dst.join() === '2,2,1,1,1', 'exact class first: topsoil still goes to c (not the nearer b)');
+  // topsoil with no topsoil fill goes into the general fill when allowed, taking space in proportion to its compacted volume
+  // A1 on, tonnes: occupied space per tonne is compaction / density. General 0.9, topsoil 0.6 (same density), so a tonne of topsoil uses 0.6 / 0.9 = 2/3 t of general space.
+  const cx = road([{ material: 'topsoil', qty: 30 }, { material: 'general', qty: 40 }], 60, 0.0001, { A1: true }, { A1: { bodyM3: 1e6 } });
+  cx.sections[2].lines = [{ material: 'general', qty: 0 }]; cx.modules.A2.accept.general.topsoil = true;
+  cx.materials.find(m => m.id === 'general').compaction = 0.9; cx.materials.find(m => m.id === 'topsoil').compaction = 0.6;
+  const x = audit('A2 cross-class space', cx);
+  // hand: 30 t of topsoil (loads 20 + 10) uses 20 t of the 60 t general need; 40 t of general then fills the other 40 t exactly.
+  ok(x.summary.complete && near(x.summary.tonnesMoved, 70) && x.summary.unfilled < 1e-9, 'topsoil uses 2/3 of its weight in general space: 70 t moved, the 60 t fill is exactly full');
+  // no home: 100 t topsoil, only a general fill
+  const nh = road([{ material: 'topsoil', qty: 100 }], 100, 0.0001);
+  nh.sections[2].lines = [{ material: 'general', qty: 0 }];
+  const n = Engine.simulate(nh);
+  ok(n.n === 0 && n.summary.complete === false && near(n.msum.unplacedByMat.topsoil, 100), 'nowhere accepts topsoil: nothing moves and 100 t is reported unplaced');
+  ok(Model.validate(nh).some(x => x.level === 'warn' && /No fill takes topsoil/.test(x.text) && /100/.test(x.text)), 'the inputs warn before the run that topsoil has no home');
+  // a blocked top line blocks the lines below it
+  const blk = road([{ material: 'topsoil', qty: 20 }, { material: 'general', qty: 60 }], 60, 0.0001);
+  blk.sections[2].lines = [{ material: 'general', qty: 0 }];
+  const bk = Engine.simulate(blk);
+  ok(bk.n === 0 && near(bk.msum.unplacedByMat.general, 60), 'top-down digging: general below an unplaceable topsoil line is also stuck');
+  ok(Model.validate(blk).some(x => /blocks the 60/.test(x.text)), 'and the warning says how much it blocks');
 }
 
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');

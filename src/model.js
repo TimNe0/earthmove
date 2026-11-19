@@ -189,7 +189,16 @@
         if (!pos(x.compaction)) add('error', nm + ': the compaction factor must be more than 0.', mc(x.id + ':compaction'));
       });
     } else if (id === 'A2') {
+      const mods = scn.setup.modules, acc = m.accept || {}, nameOf = id => ((scn.materials || []).find(x => x.id === id) || {}).name || id;
+      const homeFor = mat => scn.sections.some(s => s.lines.some(l => +l.qty < 0 && (l.material === mat || (acc[l.material] || {})[mat])))
+        || (mods.A4 && ((scn.modules.A4 || {}).points || []).some(p => p.kind === 'export' && (!(p.accepts || []).length || p.accepts.indexOf(mat) >= 0)))
+        || (mods.A5 && ((scn.modules.A5 || {}).stockpiles || []).length > 0);
       scn.sections.forEach(s => {
+        s.lines.forEach((l, li) => {
+          if (!(+l.qty > 0) || homeFor(l.material)) return;
+          const below = s.lines.slice(li + 1).reduce((a, x) => a + (+x.qty > 0 ? +x.qty : 0), 0);
+          add('warn', (s.name || 'A section') + ': No fill takes ' + nameOf(l.material) + ' (' + l.qty + ')' + (below > 0 ? ', so it blocks the ' + below + ' below it' : '') + '. Allow it in a fill, or add an export or a stockpile.', { sec: s.id, field: 'qty' });
+        });
         if (s.lines.some(l => +l.qty > 0) && s.lines.some(l => +l.qty < 0)) add('warn', (s.name || 'A section') + ' has both cut and fill lines. Split it into two sections so soil classes can be placed correctly.', { sec: s.id, field: 'qty' });
       });
     } else if (id === 'A3') {
