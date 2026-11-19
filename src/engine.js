@@ -67,7 +67,7 @@
     const startDay = parseISO(st.startDate);
     // Quantities are stored in the unit the user chose (settings.units) and converted to tonnes here.
     const uf = st.units === 'm3' && +st.density > 0 ? +st.density : 1;
-    const modsOn = (scn.setup && scn.setup.modules) || {}, perLine = !!(modsOn.A1 || modsOn.A3); // per-line conversion only when a material module is on
+    const modsOn = (scn.setup && scn.setup.modules) || {}, perLine = !!(modsOn.A1 || modsOn.A2 || modsOn.A3 || modsOn.A4 || modsOn.A5); // per-line conversion only when a material module is on
     const P = {
       n, nn, kind: new Uint8Array(nn), startDay, unitF: uf, // kind: 0 section, 1 import, 2 export, 3 stockpile
       speed: +st.speedKph, loadT: +st.loadTonnes * uf, loadMin: Math.round(+st.loadMinutes), cap: Math.floor(+st.maxMovesPerDay),
@@ -113,12 +113,13 @@
     const b3 = mods.B3 ? (md.B3 || {}) : null;
     const baseL = b3 ? num(b3.loadedKph, +st.speedKph) : +st.speedKph;
     const baseE = b3 ? num(b3.emptyKph, baseL) : baseL;
+    const a1body = mods.A1 ? num((md.A1 || {}).bodyM3, Infinity) : Infinity; // lorry body in loose m3 (A1)
     let defs = null;
     if (mods.B2) {
       const ts = ((md.B2 || {}).types || []).filter(t => Math.floor(+t.qty) > 0 && +t.payload > 0);
-      if (ts.length) defs = ts.map(t => ({ name: t.name, payload: +t.payload * uf, vL: num(t.speedLoaded, baseL), vE: num(t.speedEmpty, baseE), qty: Math.floor(+t.qty) }));
+      if (ts.length) defs = ts.map(t => ({ name: t.name, payload: +t.payload * uf, vL: num(t.speedLoaded, baseL), vE: num(t.speedEmpty, baseE), qty: Math.floor(+t.qty), body: num(t.bodyM3, a1body) }));
     }
-    if (!defs) defs = [{ name: 'Lorry', payload: P.loadT, vL: baseL, vE: baseE, qty: mods.B1 ? Math.max(1, Math.floor(num((md.B1 || {}).fleet, 1))) : Infinity }];
+    if (!defs) defs = [{ name: 'Lorry', payload: P.loadT, body: a1body, vL: baseL, vE: baseE, qty: mods.B1 ? Math.max(1, Math.floor(num((md.B1 || {}).fleet, 1))) : Infinity }];
     c.useFleet = !!mods.B1 || defs[0].qty !== Infinity;
     c.simple = !(mods.B2 || mods.B3 || c.uLorry !== 1);
     // per-section speed limit and gradient factors (B3, "vary by section")
@@ -139,7 +140,7 @@
       return { mid, start, mpm: mpmA };
     };
     c.types = defs.map(d => {
-      const t = { name: d.name, payload: d.payload, qty: d.qty };
+      const t = { name: d.name, payload: d.payload, qty: d.qty, body: d.body };
       if (!c.simple) { const l = cum(d.vL, gL), e = cum(d.vE, gE); t.cumL = l.mid; t.cumE = e.mid; t.eStart = e.start; t.eMpm = e.mpm; }
       return t;
     });
@@ -180,10 +181,11 @@
     const mods = scn.setup.modules, md = scn.modules || {}, st = scn.settings;
     const mats = scn.materials || [], byId = {}; mats.forEach(m => (byId[m.id] = m));
     const a1 = !!mods.A1, a3 = !!mods.A3, accept = mods.A2 ? ((md.A2 || {}).accept || {}) : null;
-    const M = { ids: mats.map(m => m.id), srcLines: [], dstLines: [], occ: {}, acc: {}, a1, a2: !!mods.A2, a3, a4: !!mods.A4, a5: !!mods.A5 };
+    const M = { ids: mats.map(m => m.id), srcLines: [], dstLines: [], occ: {}, acc: {}, rho: {}, bulk: {}, a1, a2: !!mods.A2, a3, a4: !!mods.A4, a5: !!mods.A5 };
     mats.forEach(m => {
       const rho = a3 && +m.density > 0 ? +m.density : (+st.density > 0 ? +st.density : 1.8);
       M.occ[m.id] = (a1 && +m.compaction > 0 ? +m.compaction : 1) / rho;
+      M.rho[m.id] = rho; M.bulk[m.id] = a1 && +m.bulking > 0 ? +m.bulking : 1;
     });
     mats.forEach(r => { M.acc[r.id] = {}; mats.forEach(m => (M.acc[r.id][m.id] = accept ? !!((accept[r.id] || {})[m.id]) || r.id === m.id : true)); });
     scn.sections.forEach((s, i) => {
@@ -284,6 +286,9 @@
         (arcsBySrc[f] = arcsBySrc[f] || []).push({ to: t, rem: +a.tonnes });
       }
     }
+    // material layer: tonnes left on each cut line, in dig order (top-down), and the line being dug
+    const M = cfg.mat, srcLeft = [], curLine = new Int32Array(nn);
+    if (M) for (const i of P.srcs) srcLeft[i] = M.srcLines[i].map(l => l.t);
     const ptr = new Int32Array(nn); // first possibly-not-full destination per source (greedy)
     const L = { src: [], dst: [], t: [], start: [], depart: [], tip: [], bs: [], lorry: [] };
     const lastDepart = new Float64Array(nn).fill(-1), lastTip = new Float64Array(nn).fill(-1);
@@ -340,7 +345,7 @@
     // Choose a destination for a load leaving source i at departT on day `day` with a lorry of type ty.
     // Returns {j, arc}, or {wait: s} when no destination can take it yet (s = earliest loading start that would work:
     // a fill not open on arrival, or, with B4, a tipping queue longer than the allowed limit), or null.
-    function pick(i, departT, day, ty, svc) {
+    function pick(i, departT, day, ty, svc, capT) {
       const arcs = arcsBySrc[i];
       let minWait = Infinity;
       // can this load go to fill j now? returns tip end time, or sets minWait and returns -1
@@ -351,7 +356,7 @@
           return -1;
         }
         if (!recv) return 0;
-        const arr = day * DAY + departT + tr, ti = tipAt(j, arr, Math.min(ty.payload, remSrc[i], freeNeed[j]));
+        const arr = day * DAY + departT + tr, ti = tipAt(j, arr, Math.min(capT, remSrc[i], freeNeed[j]));
         if (ti.ts - arr > recv.maxQ) { // queue too long: hold loading until it would be short enough
           const w = ti.mf - recv.maxQ - tr - svc - day * DAY;
           if (w < minWait) minWait = w;
@@ -437,9 +442,18 @@
         if (fleetOn && rdyStale[best]) { freshen(best); continue; } // the winner's bound was stale: get its exact value and choose again
         const lorry = fleetOn ? rdyK[best] : -1;
         const ty = fleetOn ? types[lType[lorry]] : tCore;
-        const svc = svcMin(best, bestSlot, Math.min(ty.payload, remSrc[best]));
+        let capT = ty.payload, lineIdx = -1;
+        if (M) { // one material per load: the first cut line with soil left, limited by the lorry body (A1: loose volume / bulking)
+          const sl = srcLeft[best]; let c = curLine[best];
+          while (c < sl.length && sl[c] <= EPS) c++;
+          curLine[best] = c;
+          if (c >= sl.length) { remSrc[best] = 0; continue; }
+          lineIdx = c; capT = Math.min(capT, sl[c]);
+          if (M.a1) { const mid = M.srcLines[best][c].m; capT = Math.min(capT, ty.body * M.rho[mid] / M.bulk[mid]); }
+        }
+        const svc = svcMin(best, bestSlot, Math.min(capT, remSrc[best]));
         const departT = bestT + svc;
-        const pk = pick(best, departT, d, ty, svc);
+        const pk = pick(best, departT, d, ty, svc, capT);
         if (!pk || pk.wait !== undefined) {
           // Nowhere to tip yet. If a destination opens at midnight and a long trip can still reach it
           // after loading later today, hold this source until then; otherwise it is done for today.
@@ -450,7 +464,7 @@
           continue;
         }
         const j = pk.j;
-        let tonnes = Math.min(ty.payload, remSrc[best], freeNeed[j]);
+        let tonnes = Math.min(capT, remSrc[best], freeNeed[j]);
         if (pk.arc) tonnes = Math.min(tonnes, pk.arc.rem);
         const arrAbs = base + departT + tripL(P, ty, best, j);
         let tipAbs = arrAbs;
@@ -462,6 +476,7 @@
           tipAbs = ts + dur; bf[bi] = tipAbs; tipWaitMin += ts - arrAbs; if (ts - arrAbs > tipWaitMax) tipWaitMax = ts - arrAbs;
         }
         remSrc[best] -= tonnes; freeNeed[j] -= tonnes; totalRem -= tonnes;
+        if (M) { const sl = srcLeft[best]; sl[lineIdx] -= tonnes; if (sl[lineIdx] < EPS) sl[lineIdx] = 0; }
         if (pk.arc) pk.arc.rem -= tonnes;
         if (remSrc[best] < EPS) { totalRem -= remSrc[best]; remSrc[best] = 0; }
         if (freeNeed[j] < EPS) freeNeed[j] = 0;

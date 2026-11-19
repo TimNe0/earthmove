@@ -545,8 +545,6 @@ console.log('\n32. PHASE 4 MODEL: materials and A1-A5 settings load, persist and
   sc.setup.modules.A4 = false; sc.setup.modules.A4 = true;
   ok(sc.modules.A4.points.length === 1, 'switching A4 off and on keeps its entries');
   ok(Model.validate(sc).filter(x => x.level === 'error').length === 0, 'valid A settings give no errors');
-  const noErr = Engine.simulate(sc).log.t.length;
-  ok(Engine.simulate(Model.exampleSimple()).log.t.length === noErr, 'the engine ignores A settings for now (no coupling yet)');
 
   const bad = (mod, edit, re, field) => {
     const s = withMods(Model.exampleSimple(), { [mod]: true }, {}); edit(s);
@@ -623,6 +621,50 @@ console.log('\n34. A3 PER-MATERIAL DENSITY: m3 quantities become tonnes at each 
   const h = s => crypto.createHash('sha1').update(JSON.stringify([s.log.src, s.log.dst, s.log.start, s.log.tip, s.log.t])).digest('hex').slice(0, 12);
   const m3 = Model.exampleSimple(); Model.setUnits(m3, 'm3');
   ok(h(Engine.simulate(withMods(m3, { A3: true }))) === h(Engine.simulate(m3)), 'A3 on with the site density equals core in m3 units');
+}
+
+console.log('\n35. A1 BULKING AND COMPACTION: lorry body volume limits the load; fill is entered compacted');
+{
+  const near = (x, y) => Math.abs(x - y) < 1e-9;
+  // tiny(): 100 t cut, 1 km haul at 5 kph (12 min), 10 min loading. Body 10 m3 at 1.8 t/m3 bank with bulking 1.25 = 10 x 1.8 / 1.25 = 14.4 t a load.
+  const a = withMods(tiny(), { A1: true }, { A1: { bodyM3: 10 } }); a.materials[0].bulking = 1.25;
+  const r = Engine.simulate(a);
+  // 100 / 14.4 = 6 full loads (86.4 t) and a 13.6 t load = 7 loads. Load k leaves at 07:10 + 10k and tips 12 min later: first 07:22, last (k = 6) 08:22.
+  ok(r.n === 7 && near(r.log.t[0], 14.4) && near(r.log.t[5], 14.4) && near(r.log.t[6], 13.6), '7 loads: six of 14.4 t and a last load of 13.6 t');
+  ok(hhmm(r.log.tip[0]) === '07:22' && hhmm(r.log.tip[6]) === '08:22' && r.summary.complete, 'hand: first tip 07:22, last tip 08:22 (sim ' + hhmm(r.log.tip[0]) + ', ' + hhmm(r.log.tip[6]) + ')');
+  audit('A1 body limit', a);
+  const sw = withMods(tiny(), { A1: true }, { A1: { bodyM3: 10 } }); sw.materials[0].bulking = 1.0;
+  ok(Engine.simulate(sw).n === 6, 'bulking 1.0 gives 18 t loads: 100 / 18 = 6 loads (5 of 18 t and a 10 t load)');
+  const big = withMods(tiny(), { A1: true }, { A1: { bodyM3: 14 } }); big.materials[0].bulking = 1.25;
+  ok(Engine.simulate(big).n === 5, 'default 14 m3 body holds 20.16 t, so the 20 t payload still rules (5 loads)');
+  // B2 vehicle types can carry their own body size
+  const ty = withMods(tiny(), { A1: true, B2: true, B1: true }, { A1: { bodyM3: 1000 }, B1: { fleet: 4 }, B2: { types: [{ id: 'ty1', name: 'Small', payload: 20, speedLoaded: 5, speedEmpty: 5, qty: 4, publicRoad: true, bodyM3: 5 }] } });
+  ty.materials[0].bulking = 1.25;
+  ok(near(Engine.simulate(ty).log.t[0], 7.2), 'a vehicle type body of 5 m3 gives 7.2 t loads');
+
+  // Compaction: 50 m3 bank cut at 2.0 t/m3 = 100 t. Fill is entered as compacted m3: a fill of 40 m3 compacted at factor 0.8 needs 40 x 2.0 / 0.8 = 100 t.
+  const cmp = fill => {
+    const sc = tiny(); sc.settings.units = 'm3'; sc.settings.density = 2.0; sc.settings.loadTonnes = 10;
+    sc.sections[0].lines[0].qty = 50; sc.sections[1].lines[0].qty = fill;
+    const w = withMods(Model.normalise(sc), { A1: true }, { A1: { bodyM3: 1e6 } }); w.materials[0].compaction = 0.8;
+    return w;
+  };
+  const c1 = Engine.simulate(cmp(-40));
+  ok(c1.summary.totalCut === 100 && c1.summary.totalFill === 100 && c1.summary.complete, '40 m3 compacted at 0.8 = 100 t of fill: the job completes');
+  const c2 = Engine.simulate(cmp(-50));
+  ok(c2.summary.totalFill === 125 && c2.summary.unfilled === 25 && c2.summary.complete === false, '50 m3 compacted needs 125 t: 25 t of fill is left unfilled');
+  const off = cmp(-40); off.setup.modules.A1 = false;
+  ok(Engine.simulate(off).summary.totalFill === 80, 'A1 off: 40 m3 of fill is simply 80 t');
+  // unit switch keeps the compaction link
+  const rt = cmp(-40); Model.setUnits(rt, 'tonnes');
+  ok(rt.sections[1].lines[0].qty === -100, 'switching to tonnes shows the fill as -100 t');
+  Model.setUnits(rt, 'm3');
+  ok(rt.sections[1].lines[0].qty === -40 && rt.sections[0].lines[0].qty === 50, 'and back to m3 restores 40 m3 compacted and 50 m3 bank');
+  // a section with two cut lines is dug top-down: the first material goes first, and a load never mixes materials
+  const two = withMods(tiny(), { A1: true }, { A1: { bodyM3: 1e6 } });
+  two.sections[0].lines = [{ material: 'general', qty: 30 }, { material: 'general', qty: 70 }];
+  const t2 = Engine.simulate(two);
+  ok(t2.log.t.join() === '20,10,20,20,20,10', 'two cut lines of 30 t and 70 t: loads 20, 10 (end of line one), 20, 20, 20, 10');
 }
 
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
