@@ -155,22 +155,60 @@
     P.con = con.closed || con.blocks || con.layers || con.lanes || con.pub ? con : null;
   }
   function snapWin(w, t) { for (let k = 0; k < w.length; k++) if (t < w[k][1]) return t > w[k][0] ? t : w[k][0]; return Infinity; } // earliest allowed start at or after t, or Infinity
+  function mulberry(seed) { // small seeded random generator, so every random run is reproducible
+    let a = seed >>> 0;
+    return function () { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  }
+  // Days off for the whole site: bank holidays (D4, in cal.base), then the winter shutdown and weather (D1). Weather in deterministic mode loses a day
+  // whenever the running fraction (lost days in the month / that month's site working days) crosses 1, counted over site working days only, so part months
+  // are pro-rated. With a random generator (random rain days, or a D2 run) each working day is lost with probability lost/working days instead.
+  function buildDayOff(scn, P, rand) {
+    const cal = P.cal, out = new Uint8Array(cal.base);
+    const md = (scn.modules || {}).D1 || {}, mods = (scn.setup && scn.setup.modules) || {};
+    if (!mods.D1) return out;
+    const n = out.length, lost = (md.lostDays || []).map(v => Math.max(0, +v || 0));
+    const ymd = dn => { const d = new Date(dn * 86400000); return [d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()]; };
+    const wf = /^(\d\d)-(\d\d)$/.exec(md.winterFrom || ''), wt = /^(\d\d)-(\d\d)$/.exec(md.winterTo || '');
+    const inWinter = dn => { if (!md.winterOn || !wf || !wt) return false; const q = ymd(dn), v = (q[1] + 1) * 100 + q[2], a = +wf[1] * 100 + +wf[2], b = +wt[1] * 100 + +wt[2]; return a <= b ? v >= a && v <= b : v >= a || v <= b; };
+    const baseOffAt = dn => { const k = dn - P.startDay; return k >= 0 && k < n ? cal.base[k] === 1 : false; };
+    const works = dn => { if (baseOffAt(dn) || inWinter(dn)) return false; const dow = dowOf(dn); for (let i = 0; i < P.n; i++) if (P.workDays[i][dow]) return true; return false; };
+    const monthWork = {}; // site working days in each calendar month (whole month, even before the start date)
+    const wdIn = (y, m) => { const key = y * 12 + m; if (monthWork[key] === undefined) { const a = Date.UTC(y, m, 1) / 86400000, b = Date.UTC(y, m + 1, 1) / 86400000; let c = 0; for (let dn = a; dn < b; dn++) if (works(dn)) c++; monthWork[key] = c; } return monthWork[key]; };
+    let acc = 0;
+    for (let k = 0; k < n; k++) {
+      const dn = P.startDay + k;
+      if (out[k]) continue;
+      if (inWinter(dn)) { out[k] = 1; continue; }
+      if (!works(dn)) continue;
+      const q = ymd(dn), wd = wdIn(q[0], q[1]), f = wd > 0 ? Math.min(1, (lost[q[1]] || 0) / wd) : 0;
+      if (rand) { if (rand() < f) out[k] = 1; }
+      else { acc += f; if (acc >= 1 - 1e-9) { out[k] = 1; acc -= 1; } }
+    }
+    return out;
+  }
+  // Shift windows, weekend working and holidays (D4) and weather (D1). Windows are intersected with each section's own hours (or replace them when asked);
+  // a section keeps its first start and last end in P.ws/P.we, and its inner gaps in cal.win. Weekend flags only ADD working days.
   function applyCalendar(scn, P) {
     const mods = (scn.setup && scn.setup.modules) || {}, md = scn.modules || {};
-    if (!mods.D4) return;
-    const cal = { dayOff: new Uint8Array(3700), win: [], multi: false }, b = md.D4 || {};
-    const shifts = (b.shifts || []).map(x => [hm(x.start), hm(x.end)]).filter(x => x[0] !== null && x[1] !== null && x[0] < x[1]).sort((p, q) => p[0] - q[0]);
-    for (let i = 0; i < P.n; i++) {
-      if (shifts.length) {
-        const base = b.replace ? [0, 1440] : [P.ws[i], P.we[i]], w = [];
-        for (const sh of shifts) { const a = Math.max(sh[0], base[0]), e = Math.min(sh[1], base[1]); if (a < e) { if (w.length && a <= w[w.length - 1][1]) w[w.length - 1][1] = Math.max(w[w.length - 1][1], e); else w.push([a, e]); } }
-        if (!w.length) { P.ws[i] = 0; P.we[i] = 0; } else { P.ws[i] = w[0][0]; P.we[i] = w[w.length - 1][1]; if (w.length > 1) { cal.win[i] = w; cal.multi = true; } }
+    if (!mods.D4 && !mods.D1) return;
+    const cal = { base: new Uint8Array(3700), dayOff: null, win: [], multi: false };
+    if (mods.D4) {
+      const b = md.D4 || {};
+      const shifts = (b.shifts || []).map(x => [hm(x.start), hm(x.end)]).filter(x => x[0] !== null && x[1] !== null && x[0] < x[1]).sort((p, q) => p[0] - q[0]);
+      for (let i = 0; i < P.n; i++) {
+        if (shifts.length) {
+          const base = b.replace ? [0, 1440] : [P.ws[i], P.we[i]], w = [];
+          for (const sh of shifts) { const a = Math.max(sh[0], base[0]), e = Math.min(sh[1], base[1]); if (a < e) { if (w.length && a <= w[w.length - 1][1]) w[w.length - 1][1] = Math.max(w[w.length - 1][1], e); else w.push([a, e]); } }
+          if (!w.length) { P.ws[i] = 0; P.we[i] = 0; } else { P.ws[i] = w[0][0]; P.we[i] = w[w.length - 1][1]; if (w.length > 1) { cal.win[i] = w; cal.multi = true; } }
+        }
+        if (b.weekendSat) P.workDays[i][5] = true;
+        if (b.weekendSun) P.workDays[i][6] = true;
       }
-      if (b.weekendSat) P.workDays[i][5] = true;
-      if (b.weekendSun) P.workDays[i][6] = true;
+      if (b.holidaysOn !== false) for (const h of holidayList(scn)) { const dn = parseISO(h.date); if (dn === null) continue; const k = dn - P.startDay; if (k >= 0 && k < cal.base.length) cal.base[k] = 1; }
     }
-    if (b.holidaysOn !== false) for (const h of holidayList(scn)) { const dn = parseISO(h.date); if (dn === null) continue; const k = dn - P.startDay; if (k >= 0 && k < cal.dayOff.length) cal.dayOff[k] = 1; }
     P.cal = cal;
+    const d1 = md.D1 || {};
+    cal.dayOff = buildDayOff(scn, P, mods.D1 && d1.random ? mulberry(Math.floor(+d1.seed) || 1) : null);
   }
   function prepare(scn) {
     const st = scn.settings, secs = scn.sections, n = secs.length;
@@ -426,14 +464,15 @@
   function simulate(scn, opts) {
     opts = opts || {};
     const P = opts.P || prepare(scn);
-    return (P.cfg.full ? simulateFull : simulateCore)(scn, opts.P ? opts : Object.assign({}, opts, { P }));
+    return (P.cfg.full || opts.dayOff || opts.breakdown || opts.levels ? simulateFull : simulateCore)(scn, opts.P ? opts : Object.assign({}, opts, { P }));
   }
 
   function simulateFull(scn, opts) {
     opts = opts || {};
     const P = opts.P || prepare(scn), n = P.n, nn = P.nn, cfg = P.cfg; // node-indexed arrays use nn; section loops stop at n
     // calendar (D4): days off for the whole site, shift windows with gaps
-    const cal = P.cal, dayOff = cal ? cal.dayOff : null, winMulti = !!(cal && cal.multi);
+    const cal = P.cal, dayOff = opts.dayOff || (cal ? cal.dayOff : null), winMulti = !!(cal && cal.multi);
+    const brk = opts.breakdown || null, brkStride = opts.breakdownStride || 0; // D2: brk[i * stride + day] = 1 when source i is down that day
     let idleWork = -1; // working days since the last movement (days off do not count), for stuck detection
     const con = P.con, conClosed = !!(con && con.closed), conBlocks = con && con.blocks, conLayers = con && con.layers;
     // layered fill (C4): per fill, the tonnes left in the current layer, its opening time (absolute minutes) and the latest tip so far in it
@@ -453,7 +492,7 @@
     }
     // closed periods (C3): is section i closed on day d, and if so on which day does it open again (Infinity = never)?
     const closedUntil = (i, d) => { const r = conClosed ? con.closed[i] : null; if (r) for (let k = 0; k < r.length; k++) if (d >= r[k][0] && d < r[k][1]) return r[k][1]; return 0; };
-    const works = (i, d, dow) => P.workDays[i][dow] && !(conClosed && closedUntil(i, d)); // does source i work on day d (weekday dow)?
+    const works = (i, d, dow) => P.workDays[i][dow] && !(conClosed && closedUntil(i, d)) && !(brk && d < brkStride && brk[i * brkStride + d]); // does source i work on day d (weekday dow)?
     const plan = opts.plan !== undefined ? opts.plan : activePlan(scn);
     const noLog = !!opts.noLog;
     const horizon = opts.horizonDays || 3650;
@@ -915,7 +954,12 @@
         msum.nodes.push({ id: P.ids[x], name: P.names[x], kind: P.kind[x], tonnes: P.kind[x] === 3 ? stockIn[x] : nodeTot[x], out: P.kind[x] === 3 ? stockOut[x] : 0, closing: P.kind[x] === 3 ? stockTot[x] : 0, cost: P.kind[x] === 3 ? stockOut[x] * (+r.handleCostPerT || 0) : cost });
       }
     }
-    if (noLog) return { P, log: null, n: moves, daily, sections: null, summary, msum };
+    let levels = null;
+    if (opts.levels) { // D2: when each section reached its finished level (minutes), or -1 if it never did
+      levels = new Float64Array(n).fill(-1);
+      for (let i = 0; i < n; i++) { if (P.qty[i] > 0 && remSrc[i] <= EPS) levels[i] = lastDepart[i]; else if (P.qty[i] < 0 && freeNeed[i] <= EPS) levels[i] = lastTip[i]; }
+    }
+    if (noLog) return { P, log: null, n: moves, daily, sections: null, summary, msum, levels };
 
     const sections = [];
     for (let i = 0; i < n; i++) {
@@ -1331,5 +1375,5 @@
   }
   function startedBy(res, t) { return upperBound(res.log.start, t); } // log.start is non-decreasing
 
-  return { lateness, ukHolidays, holidayList, DAY, parseISO, hm, dayToISO, fmtDay, fmtClock, fmtTime, dowOf, DOW_NAMES, netQty, lineFactor, lineTonnes, prepare, dist, travelMin, tripL, tripE, tripX, simulate, minCostFlow, sigOf, activePlan, planStatus, buildSeries, remainingAt, upperBound, startedBy, truckStats, trucksAt, nextActive, chartData };
+  return { mulberry, buildDayOff, lateness, ukHolidays, holidayList, DAY, parseISO, hm, dayToISO, fmtDay, fmtClock, fmtTime, dowOf, DOW_NAMES, netQty, lineFactor, lineTonnes, prepare, dist, travelMin, tripL, tripE, tripX, simulate, minCostFlow, sigOf, activePlan, planStatus, buildSeries, remainingAt, upperBound, startedBy, truckStats, trucksAt, nextActive, chartData };
 });

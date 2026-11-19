@@ -252,6 +252,17 @@
           if (!same) add('warn', (s.name || 'A section') + ' can only ' + (q > 0 ? 'send its soil to' : 'receive soil from') + ' the other side of ' + nm + ', so it cannot start before ' + when + '.', mc(b.id + ':openDate'));
         });
       });
+    } else if (id === 'D1') {
+      (m.lostDays || []).forEach((v, k) => {
+        const mn = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][k];
+        if (!(+v >= 0)) add('error', mn + ': the expected lost days must be 0 or more.', mc('lost' + k));
+        else if (+v > 25) add('warn', mn + ': ' + v + ' lost days is more than the working days in a month, so every working day would be lost.', mc('lost' + k));
+      });
+      if ((m.lostDays || []).length !== 12) add('error', 'Weather needs an expected number of lost days for each of the 12 months.', mc('lost0'));
+      if (m.winterOn) ['winterFrom', 'winterTo'].forEach(f => { if (!/^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(m[f] || '')) add('error', 'The winter shutdown ' + (f === 'winterFrom' ? 'start' : 'end') + ' must be a month and day written like 12-20.', mc(f)); });
+    } else if (id === 'D2') {
+      if (!(Math.floor(+m.runs) >= 10 && Math.floor(+m.runs) <= 5000)) add('error', 'The number of runs must be between 10 and 5000.', mc('runs'));
+      if (!(+m.breakdownPct >= 0 && +m.breakdownPct <= 100)) add('error', 'The breakdown chance per loading point per day must be between 0 and 100 percent.', mc('breakdownPct'));
     } else if (id === 'D3') {
       const t = m.targets || {};
       Object.keys(t).forEach(k => {

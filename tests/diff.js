@@ -84,6 +84,8 @@ const NEUTRAL = {
   C3: { periods: [] },
   C4: { layers: 1, waitDays: 0, mode: 'site', bySection: {} },
   C5: { publicLimit: 100, internalLimit: '', publicAll: false, publicStretches: [] },
+  D1: { lostDays: new Array(12).fill(0), winterOn: false, random: false },
+  D2: { runs: 200, seed: 1, breakdownPct: 2 },
   D3: { targets: {} },
   D4: { shifts: [{ start: '00:00', end: '23:59' }], replace: false, weekendSat: false, weekendSun: false, holidaysOn: false }
 };

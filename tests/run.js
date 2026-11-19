@@ -1276,6 +1276,80 @@ console.log('\n50. THE SITE DEMO EXAMPLE: every Phase 5 module on the 8 km road'
   ok(Engine.lateness(noBridge, Engine.simulate(noBridge)).filter(x => x.late).length === 0, 'without the blockage nothing is late');
 }
 
+console.log('\n51. D1 WEATHER: lost days per month, winter shutdown, random rain days');
+{
+  const days = r => Array.from({ length: r.n }, (_, k) => Math.floor(r.log.start[k] / 1440)).join();
+  const d1 = (p, over) => { const sc = tiny(over); sc.settings.maxMovesPerDay = 1; return withMods(sc, { D1: true }, { D1: Object.assign({ lostDays: new Array(12).fill(0), winterOn: false, random: false }, p) }); };
+  const none = Engine.simulate((() => { const x = tiny(); x.settings.maxMovesPerDay = 1; return x; })());
+  ok(days(none) === '0,1,2,3,4', 'core, one load a day: days 0,1,2,3,4');
+  // hand: January 2027 has 21 Monday-Friday working days; 7 lost days a month is a fraction of 7/21 = 1/3 per working day. The running fraction reaches 1 on the third
+  // working day: Wednesday (day 2) is lost; then Thu .33, Fri .67, and Monday (day 7) reaches 1 and is lost. Loads: Mon 0, Tue 1, Thu 3, Fri 4, Tue 8.
+  const w = audit('D1 7 lost days in January', d1({ lostDays: [7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }));
+  ok(days(w) === '0,1,3,4,8', 'hand: every third working day is lost (Wed day 2, Mon day 7), so the loads fall on days 0,1,3,4,8');
+  ok(w.summary.idleDays === 0, 'lost days are not idle working days');
+  ok(w.summary.endTime > none.summary.endTime, 'direction: weather makes the programme later');
+  // winter shutdown: Tuesday 12 and Wednesday 13 January are off
+  const wi = audit('D1 winter shutdown 12-13 Jan', d1({ winterOn: true, winterFrom: '01-12', winterTo: '01-13' }));
+  ok(days(wi) === '0,3,4,7,8', 'hand: Tue and Wed off, so loads on days 0,3,4,7,8');
+  // a winter shutdown that wraps the new year: 20 Dec to 5 Jan, project starting 15 Dec 2027
+  const wr = Engine.prepare(d1({ winterOn: true, winterFrom: '12-20', winterTo: '01-05' }, { settings: Object.assign({}, tiny().settings, { startDate: '2027-12-15' }) }));
+  ok(wr.cal.dayOff[4] === 0 && wr.cal.dayOff[5] === 1 && wr.cal.dayOff[21] === 1 && wr.cal.dayOff[22] === 0, 'a 20 Dec to 5 Jan shutdown wraps the year end (start 15 Dec: day 4 = 19 Dec open, day 5 = 20 Dec off, day 21 = 5 Jan off, day 22 = 6 Jan open)');
+  // random rain days: reproducible for a seed, different for another seed
+  const rnd = (seed) => Engine.prepare(d1({ lostDays: new Array(12).fill(10), random: true, seed })).cal.dayOff;
+  ok(Array.from(rnd(7)).join() === Array.from(rnd(7)).join() && Array.from(rnd(7)).join() !== Array.from(rnd(8)).join(), 'random rain days are the same for the same seed and different for another');
+  const lostFrac = (() => { const a = rnd(3); let lost = 0, work = 0; for (let k = 0; k < 365; k++) { work++; lost += a[k]; } return lost / work; })();
+  ok(lostFrac > 0.15 && lostFrac < 0.6, 'random mode with about 10 lost days in 21 working days loses a plausible share of days (' + (lostFrac * 100).toFixed(0) + '% of calendar days)');
+  // neutral settings and defaults
+  const hashOf = q => crypto.createHash('sha1').update(JSON.stringify([q.log.src, q.log.dst, q.log.start, q.log.tip, q.log.t])).digest('hex').slice(0, 12);
+  ok(hashOf(Engine.simulate(withMods(Model.exampleSimple(), { D1: true }, { D1: { lostDays: new Array(12).fill(0), winterOn: false, random: false } }))) === hashOf(Engine.simulate(Model.exampleSimple())), 'D1 with no lost days and no shutdown reproduces the core result');
+  const def = audit('D1 at defaults', withMods(Model.exampleSimple(), { D1: true }));
+  ok(def.summary.unfilled < 1e-6 && def.summary.endTime > Engine.simulate(Model.exampleSimple()).summary.endTime, 'D1 at its defaults completes and finishes later than without weather');
+  ok(Model.validate(d1({ lostDays: [-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] })).some(x => x.level === 'error' && /January: the expected lost days must be 0 or more/.test(x.text)), 'a negative month is rejected in plain English');
+  ok(Model.validate(d1({ winterOn: true, winterFrom: 'Dec 20' })).some(x => /written like 12-20/.test(x.text)), 'a badly written shutdown date is rejected');
+}
+
+console.log('\n52. D2 PROBABILISTIC DATES: seeded runs with random weather and breakdowns, 50% and 80% dates');
+{
+  const Risk = require('../src/risk.js');
+  const runRisk = sc => { const job = Risk.create(sc); while (!job.done) job.step(250); return job.result; };
+  const d2 = (p2, p1) => { const sc = tiny(); sc.settings.maxMovesPerDay = 2; return withMods(sc, { D1: true, D2: true }, { D1: Object.assign({ lostDays: new Array(12).fill(0), winterOn: false, random: false }, p1), D2: Object.assign({ runs: 40, seed: 5, breakdownPct: 0 }, p2) }); };
+  // exact percentiles (nearest rank): of 5 values the 50% value is the 3rd smallest and the 80% value the 4th; a run that never finishes counts as later than any date
+  ok(Risk.percentile([5, 1, 3, 2, 4], 0.5) === 3 && Risk.percentile([5, 1, 3, 2, 4], 0.8) === 4, 'hand: of [5,1,3,2,4] the 50% value is 3 and the 80% value is 4');
+  ok(Risk.percentile([1, 2, 3, Infinity, Infinity], 0.5) === 3 && Risk.percentile([1, 2, 3, Infinity, Infinity], 0.8) === Infinity, 'two runs that never finish: the 50% value is still 3, the 80% value is "never"');
+  // no randomness: every run is the deterministic run
+  const z = runRisk(d2({}));
+  ok(z.p50 === z.p80 && z.p50 === z.base && z.finishedPct === 100 && z.sections.every(s => s.p50 === s.base && s.p80 === s.base), 'zero randomness: every run equals the deterministic run (50% = 80% = base for the job and every section)');
+  // a loading point that is always down never finishes
+  const dead = runRisk(d2({ runs: 10, breakdownPct: 100 }));
+  ok(dead.finishedPct === 0 && dead.p50 === Infinity && dead.sections.every(s => s.reachedPct === 0), 'a loading point down every day: no run finishes, and the 50% date is "never"');
+  // reproducible by seed, different for another seed
+  const strip = r => JSON.stringify(Object.assign({}, r, { seconds: 0 }));
+  const s1 = runRisk(d2({ breakdownPct: 30, seed: 9 })), s2 = runRisk(d2({ breakdownPct: 30, seed: 9 })), s3 = runRisk(d2({ breakdownPct: 30, seed: 10 }));
+  ok(strip(s1) === strip(s2), 'the same seed gives exactly the same answer');
+  ok(strip(s1) !== strip(s3), 'a different seed gives a different answer');
+  // ordering and direction on a single cut/fill pair (where more delay can only make it later)
+  const rain = runRisk(d2({ runs: 60 }, { lostDays: new Array(12).fill(10) }));
+  ok(rain.p80 >= rain.p50 && rain.p50 >= z.base, 'with random rain: 80% date is not before the 50% date, and neither is before the no-weather date');
+  const b5 = runRisk(d2({ breakdownPct: 5 })), b50 = runRisk(d2({ breakdownPct: 50 }));
+  ok(b50.p50 > b5.p50 && b50.p80 >= b5.p80, 'direction: more breakdowns push the 50% date later (5% vs 50% chance per day)');
+  ok(rain.sections.every(s => s.p80 >= s.p50), 'every section has its 80% date at or after its 50% date');
+  // progress and cancel
+  const jc = Risk.create(d2({ runs: 400 })); jc.step(1);
+  const pr = jc.progress(); jc.cancel();
+  ok(pr.done >= 1 && pr.done <= pr.total && jc.done && jc.result.cancelled === true, 'progress is reported while running and a cancel stops the job');
+  // speed: 200 runs of the 12-section example
+  const big = withMods(Model.exampleSimple(), { D1: true, D2: true }, { D2: { runs: 200, seed: 1, breakdownPct: 2 } });
+  const t0 = Date.now(), br = runRisk(big), ms = Date.now() - t0;
+  console.log('   200 runs of the 12-section example took ' + ms + ' ms (' + (ms / 200).toFixed(1) + ' ms a run); 50% ' + (br.p50 === Infinity ? 'never' : Engine.fmtDay(br.startDay + Math.floor(br.p50 / 1440))) + ', 80% ' + (br.p80 === Infinity ? 'never' : Engine.fmtDay(br.startDay + Math.floor(br.p80 / 1440))));
+  ok(ms < 30000 && br.runs === 200, '200 runs of the 12-section example finish well within 30 seconds');
+  ok(br.p80 >= br.p50 && br.p50 > 0, 'the 12-section example: 80% completion date not before the 50% date');
+  // D2 never changes a single run
+  const hashOf = q => crypto.createHash('sha1').update(JSON.stringify([q.log.src, q.log.dst, q.log.start, q.log.tip, q.log.t])).digest('hex').slice(0, 12);
+  ok(hashOf(Engine.simulate(withMods(Model.exampleSimple(), { D2: true }, { D2: { runs: 500, seed: 3, breakdownPct: 20 } }))) === hashOf(Engine.simulate(Model.exampleSimple())), 'D2 switched on does not change an ordinary run');
+  ok(Model.validate(d2({ runs: 5 })).some(x => x.level === 'error' && /between 10 and 5000/.test(x.text) && x.cell.mod === 'D2'), 'too few runs is rejected in plain English');
+  ok(Model.validate(d2({ breakdownPct: 120 })).some(x => /between 0 and 100 percent/.test(x.text)), 'a breakdown chance over 100% is rejected');
+}
+
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
 {
   const a = Model.exampleSimple(); a.setup.level = 'custom'; a.modules.B1 = { site: { fleet: 12 }, mode: 'site' };
