@@ -117,3 +117,10 @@ label.check{display:flex;align-items:center;gap:4px;margin:4px 0}
 input.sw{width:38px;min-width:0;padding:1px;height:26px}
 td.ctr{text-align:center}
 td.acc .chk{display:inline-block;margin-right:8px;font-size:12px;white-space:nowrap}
+
+/* weather and risk (D1, D2) */
+.settings.months{grid-template-columns:repeat(auto-fit,minmax(70px,1fr))}
+.hist{display:flex;align-items:flex-end;gap:1px;height:64px;margin:6px 0}
+.hist i{flex:1;min-width:2px;background:var(--accent2);opacity:.75}
+.hist i.p50{background:var(--accent);opacity:1}
+.hist i.p80{background:var(--err);opacity:1}

@@ -4,9 +4,10 @@
   const E = Engine, M = Model, MOD = Modules;
   const $ = id => document.getElementById(id);
   const STORE = 'earthmove.scenario.v1';
-  MOD.setBuilt(['A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'C1', 'C2', 'C3', 'C4', 'C5', 'D3', 'D4', 'D5', 'E8']); // modules built so far
+  MOD.setBuilt(['A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'C1', 'C2', 'C3', 'C4', 'C5', 'D1', 'D2', 'D3', 'D4', 'D5', 'E8']); // modules built so far
   const modOn = id => !!(MOD.byId[id] && MOD.byId[id].built && scn.setup.modules[id]);
   const anySite = () => ['C1', 'C2', 'C3', 'C4', 'C5', 'D4'].some(modOn); // site constraints and calendar (the D3 target dates live in the Sections table)
+  const anyRisk = () => ['D1', 'D2'].some(modOn); // weather and risk
   const anyA = () => ['A1', 'A2', 'A3', 'A4', 'A5'].some(modOn); // any materials module on
   const matName = id => { const m = (scn.materials || []).find(x => x.id === id); return m ? (m.name || m.id) : id; };
   const matCol = id => { const m = (scn.materials || []).find(x => x.id === id); return m ? m.colour : null; };
@@ -263,6 +264,7 @@
     ctx.strokeStyle = COL.ink; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); ctx.beginPath(); ctx.moveTo(0, base); ctx.lineTo(W, base); ctx.stroke(); ctx.setLineDash([]);
     ctx.fillStyle = COL.ink; ctx.font = 'italic 11px system-ui'; ctx.fillText('finished level', 4, base - 3);
     cv._hits = hits;
+    if (P.cal && P.cal.dayOff[Math.floor(S.t / 1440)]) { ctx.fillStyle = COL.err; ctx.font = 'bold 12px system-ui'; ctx.fillText('Day off: bank holiday, shutdown or weather', Math.max(8, W - 290), 14); }
     P.nodeIdx.forEach((x, k) => { // off-site gates (A4) and stockpiles (A5) sit on the road at their chainage
       const px = X(P.chain[x]); if (px < -30 || px > W + 30) return;
       const kind = P.kind[x], col = kind === 1 ? COL.accent : kind === 2 ? COL.err : COL.accent2, y0 = 26 + (k % 3) * 13;
@@ -390,7 +392,7 @@
   })();
 
   // ---------- tabs ----------
-  const tabsList = () => [['sections', 'Sections']].concat(['B1', 'B2', 'B3', 'B4', 'B5', 'B6'].some(modOn) ? [['fleet', 'Fleet & plant']] : [], anyA() ? [['materials', 'Materials & sites']] : [], anySite() ? [['site', 'Site & calendar']] : [], [['results', 'Results'], ['log', 'Movement log']]).concat(MOD.activeIds(scn).indexOf('D5') >= 0 ? [['scenarios', 'Scenarios']] : [], [['messages', 'Messages']]);
+  const tabsList = () => [['sections', 'Sections']].concat(['B1', 'B2', 'B3', 'B4', 'B5', 'B6'].some(modOn) ? [['fleet', 'Fleet & plant']] : [], anyA() ? [['materials', 'Materials & sites']] : [], anySite() ? [['site', 'Site & calendar']] : [], anyRisk() ? [['risk', 'Weather & risk']] : [], [['results', 'Results'], ['log', 'Movement log']]).concat(MOD.activeIds(scn).indexOf('D5') >= 0 ? [['scenarios', 'Scenarios']] : [], [['messages', 'Messages']]);
   function renderTabs(rebuildTable) {
     const tabs = $('tabs'); tabs.replaceChildren();
     const nMsg = allMessages().filter(m => m.level !== 'info').length;
@@ -399,6 +401,7 @@
     const body = $('tabbody');
     if (S.tab === 'sections') { if (rebuildTable || !body.firstChild || !body.querySelector('#sectable')) renderSections(); else updateChainage(); }
     else if (S.tab === 'fleet') { if (rebuildTable || !body.querySelector('#fleetpane')) renderFleet(); }
+    else if (S.tab === 'risk') { if (rebuildTable || !body.querySelector('#riskpane')) renderRisk(); }
     else if (S.tab === 'site') { if (rebuildTable || !body.querySelector('#sitepane')) renderSite(); }
     else if (S.tab === 'materials') { if (rebuildTable || !body.querySelector('#matpane')) renderMaterials(); }
     else if (S.tab === 'results') renderResults();
@@ -489,7 +492,7 @@
   }
   function moveSec(i, d) { const j = i + d; if (j < 0 || j >= scn.sections.length) return; const a = scn.sections; [a[i], a[j]] = [a[j], a[i]]; recompute(true); }
   function focusCell(cell) {
-    showScreen('main'); S.tab = cell.mod ? (cell.mod[0] === 'A' ? 'materials' : /^[CD]/.test(cell.mod) ? 'site' : 'fleet') : 'sections'; renderTabs(true);
+    showScreen('main'); S.tab = cell.mod ? (cell.mod[0] === 'A' ? 'materials' : /^D[12]$/.test(cell.mod) ? 'risk' : /^[CD]/.test(cell.mod) ? 'site' : 'fleet') : 'sections'; renderTabs(true);
     const key = cell.settings ? 'settings:' + cell.settings : cell.mod ? 'mod:' + cell.mod + ':' + cell.field : cell.sec + ':' + cell.field;
     const el = document.querySelector('[data-cell="' + key + '"]'); if (!el) return;
     const inp = el.matches('input') ? el : el.querySelector('input');
@@ -834,6 +837,84 @@
   })();
 
   // ---------- fleet and plant tab (B1 to B6) ----------
+  // ---------- Weather & risk (D1, D2) ----------
+  const RISK = { state: 'idle', frac: 0, result: null, worker: null, sig: '', error: '', cancelFlag: false };
+  const riskSig = () => E.sigOf(scn) + JSON.stringify((scn.modules || {}).D2 || {});
+  function riskDate(t, r) { return t === null || t === undefined ? 'not reached' : t === Infinity ? 'not within the programme' : E.fmtDay(r.startDay + Math.floor(t / 1440)); }
+  function renderRiskResult() {
+    const box = $('riskresult'); if (!box) return; box.replaceChildren();
+    if (RISK.state === 'running') {
+      box.append(h('div', { class: 'optprog' }, h('div', { class: 'bar' }, h('i', { style: 'width:' + Math.round(RISK.frac * 100) + '%' })), h('span', {}, Math.round(RISK.frac * 100) + '% of the runs done')), h('button', { onclick: cancelRisk }, 'Cancel'));
+      return;
+    }
+    if (RISK.error) box.append(h('div', { class: 'note err' }, RISK.error));
+    const r = RISK.result; if (!r) return;
+    if (r.cancelled) { box.append(h('div', { class: 'note' }, 'Cancelled after ' + r.runs + ' runs.')); return; }
+    if (RISK.sig !== riskSig()) box.append(h('div', { class: 'note warn' }, 'The inputs have changed since this analysis. Run it again to refresh it.'));
+    const stat = (v, l) => h('div', { class: 'stat' }, h('b', {}, v), h('span', {}, l));
+    box.append(h('div', { class: 'stats' }, stat(riskDate(r.p50, r), '50% confidence completion (half the runs finish by then)'), stat(riskDate(r.p80, r), '80% confidence completion'),
+      stat(r.base === null ? 'not reached' : riskDate(r.base, r), 'Single run with expected weather'), stat(r.finishedPct + '%', 'Runs that finished the job'), stat(r.runs + ' runs, ' + r.seconds.toFixed(1) + ' s', 'Seed ' + r.seed + (r.weather ? ', random weather' : ', no weather') + ', breakdowns ' + r.breakdownPct + '% a day')));
+    if (r.hist.length) { // when the runs finished: one bar a day, the 50% and 80% days marked
+      const max = Math.max(...r.hist.map(x => x.count)), d50 = r.p50 === Infinity ? -1 : Math.floor(r.p50 / 1440), d80 = r.p80 === Infinity ? -1 : Math.floor(r.p80 / 1440), first = r.hist[0].day, last = r.hist[r.hist.length - 1].day, bars = [];
+      for (let d = first; d <= last; d++) { const c = (r.hist.find(x => x.day === d) || { count: 0 }).count; bars.push(h('i', { class: d === d50 ? 'p50' : d === d80 ? 'p80' : '', style: 'height:' + Math.max(2, Math.round(c / max * 60)) + 'px', title: E.fmtDay(r.startDay + d) + ': ' + c + ' runs' })); }
+      box.append(h('h4', {}, 'When the runs finished'), h('div', { class: 'hist' }, bars), h('p', { class: 'hint' }, E.fmtDay(r.startDay + first) + ' to ' + E.fmtDay(r.startDay + last) + '. Orange bar: 50% date. Red bar: 80% date.'));
+    }
+    box.append(h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Section', 'Type', 'Single run', '50% date', '80% date', 'Runs that reached level'].map(c => h('th', {}, c)))),
+      h('tbody', {}, r.sections.map(x => h('tr', {}, h('td', {}, x.name), h('td', {}, x.type === 'cut' ? 'Cut' : 'Fill'), h('td', {}, riskDate(x.base, r)), h('td', {}, riskDate(x.p50, r)), h('td', {}, riskDate(x.p80, r)), h('td', { class: 'num' }, x.reachedPct + '%')))))));
+  }
+  function finishRisk(result) { RISK.state = 'done'; RISK.result = result; RISK.sig = riskSig(); if (RISK.worker) { try { RISK.worker.terminate(); } catch (e) { } RISK.worker = null; } renderRiskResult(); const b = $('riskrun'); if (b) b.disabled = false; }
+  function cancelRisk() { if (RISK.worker) RISK.worker.postMessage({ cmd: 'cancel' }); else RISK.cancelFlag = true; }
+  function startRisk() {
+    if (issues.some(i => i.level === 'error')) { RISK.error = 'Fix the problems listed under Messages first.'; renderRiskResult(); return; }
+    RISK.state = 'running'; RISK.frac = 0; RISK.error = ''; RISK.cancelFlag = false;
+    const sc = JSON.parse(JSON.stringify(scn)); sc.saved = []; const b = $('riskrun'); if (b) b.disabled = true;
+    let w = null;
+    try { w = new Worker(URL.createObjectURL(new Blob([$('worker-src').textContent], { type: 'text/javascript' }))); } catch (e) { w = null; }
+    const onPage = () => { // no worker available: run in small slices on the page so it stays responsive
+      if (RISK.worker) { try { RISK.worker.terminate(); } catch (e) { } RISK.worker = null; }
+      let job; try { job = Risk.create(sc); } catch (e) { RISK.error = String(e.message || e); RISK.state = 'idle'; renderRiskResult(); if (b) b.disabled = false; return; }
+      const tick = () => { if (RISK.cancelFlag) job.cancel(); else job.step(40); RISK.frac = job.progress().frac; renderRiskResult(); if (job.done) finishRisk(job.result); else setTimeout(tick, 0); };
+      tick();
+    };
+    if (w) {
+      RISK.worker = w;
+      w.onmessage = ev => { const m = ev.data; if (m.type === 'riskprogress') { RISK.frac = m.frac; renderRiskResult(); } else if (m.type === 'riskdone') finishRisk(m.result); else if (m.type === 'error') onPage(); };
+      w.onerror = () => onPage();
+      renderRiskResult(); w.postMessage({ cmd: 'risk', scn: sc });
+    } else { renderRiskResult(); onPage(); }
+  }
+  function renderRisk() {
+    const body = $('tabbody'); body.replaceChildren();
+    const md = scn.modules, pane = h('div', { id: 'riskpane' });
+    const hint = t => h('p', { class: 'hint' }, t);
+    const fld = (label, obj, key, cellId, o) => {
+      o = o || {};
+      const inp = h('input', { type: o.type || 'number', value: obj[key], step: 'any', 'data-cell': cellId, placeholder: o.ph || '' });
+      inp.addEventListener('input', () => { obj[key] = o.type === 'text' ? inp.value : inp.value === '' ? NaN : +inp.value; changed(false); });
+      return h('div', {}, h('label', {}, label), inp);
+    };
+    const card = (id, title, kids) => h('div', { class: 'group' }, h('h4', {}, id + '  ' + title), kids);
+    if (modOn('D1')) {
+      const b = md.D1, MN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      pane.append(card('D1', 'Weather', [
+        h('h5', {}, 'Expected days lost to weather in each month'),
+        h('div', { class: 'settings months' }, MN.map((mn, k) => { const inp = h('input', { type: 'number', value: b.lostDays[k], step: 'any', min: 0, 'data-cell': 'mod:D1:lost' + k }); inp.addEventListener('input', () => { b.lostDays[k] = inp.value === '' ? NaN : +inp.value; changed(false); }); return h('div', {}, h('label', {}, mn), inp); })),
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!b.winterOn, onchange: ev => { b.winterOn = ev.target.checked; recompute(true); } }), ' Winter shutdown every year'),
+        b.winterOn ? h('div', { class: 'settings' }, fld('Shuts down on (month-day, e.g. 12-20)', b, 'winterFrom', 'mod:D1:winterFrom', { type: 'text', ph: 'MM-DD' }), fld('Reopens after (month-day, e.g. 01-05)', b, 'winterTo', 'mod:D1:winterTo', { type: 'text', ph: 'MM-DD' })) : null,
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!b.random, onchange: ev => { b.random = ev.target.checked; recompute(true); } }), ' Random rain days (otherwise the lost days are spread evenly through each month)'),
+        b.random ? h('div', { class: 'settings' }, fld('Random seed', b, 'seed', 'mod:D1:seed')) : null,
+        hint('Lost days are days nothing loads anywhere on site. Each month’s lost days are spread over its working days (bank holidays and a winter shutdown are not working days). With random rain days, each working day is lost with a chance of lost days ÷ working days, drawn with the seed above so the answer is repeatable. Lost days are not counted as idle days in the results.')]));
+    }
+    if (modOn('D2')) {
+      const b = md.D2;
+      pane.append(card('D2', 'Probabilistic dates', [
+        h('div', { class: 'settings' }, fld('Number of runs', b, 'runs', 'mod:D2:runs'), fld('Random seed', b, 'seed', 'mod:D2:seed'), fld('Chance a loading point is down on any day (%)', b, 'breakdownPct', 'mod:D2:breakdownPct')),
+        h('p', {}, h('button', { id: 'riskrun', class: 'primary', onclick: startRisk }, 'Run the risk analysis')),
+        h('div', { id: 'riskresult' }),
+        hint('The model is run many times. Each run draws its own weather (the monthly lost days above, if weather is on) and its own breakdowns, then reports the day the whole job finishes and the day each section reaches level. The 50% date is when half the runs had finished; the 80% date is when four in five had. A run that never finishes counts as later than any date. The same seed always gives the same answer.')]));
+    }
+    body.append(pane); renderRiskResult();
+  }
   // ---------- Site & calendar (C1-C5, D4) ----------
   function renderSite() {
     const body = $('tabbody'); body.replaceChildren();

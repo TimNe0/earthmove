@@ -449,7 +449,17 @@
     m.D3.targets = { s5: '2027-02-28', s7: '2027-03-12', s12: '2027-03-05' };
     return normalise(o);
   }
-  const EXAMPLES = { simple: exampleSimple, modules: exampleModules, materials: exampleMaterials, site: exampleSite };
+  // Fifth example: weather and probabilistic dates on the 8 km road, with the UK bank holidays.
+  function exampleRisk() {
+    const o = exampleSimple();
+    o.name = 'Risk demo: weather, bank holidays and probabilistic dates on the 8 km road';
+    o.setup.level = 'custom';
+    ['D1', 'D2', 'D4'].forEach(id => (o.setup.modules[id] = true));
+    o.modules.D1.winterOn = true; o.modules.D1.winterFrom = '12-20'; o.modules.D1.winterTo = '01-05';
+    o.modules.D2.runs = 200; o.modules.D2.breakdownPct = 2;
+    return normalise(o);
+  }
+  const EXAMPLES = { simple: exampleSimple, modules: exampleModules, materials: exampleMaterials, site: exampleSite, risk: exampleRisk };
 
-  return { VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, exampleSimple, exampleModules, exampleMaterials, exampleSite };
+  return { VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, exampleSimple, exampleModules, exampleMaterials, exampleSite, exampleRisk };
 });

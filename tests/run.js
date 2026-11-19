@@ -1350,6 +1350,23 @@ console.log('\n52. D2 PROBABILISTIC DATES: seeded runs with random weather and b
   ok(Model.validate(d2({ breakdownPct: 120 })).some(x => /between 0 and 100 percent/.test(x.text)), 'a breakdown chance over 100% is rejected');
 }
 
+console.log('\n53. THE RISK DEMO EXAMPLE AND THE PHASE 6 SWEEP');
+{
+  const Risk = require('../src/risk.js'), ex = Model.exampleRisk(), plain = Engine.simulate(Model.exampleSimple());
+  ok(Model.validate(ex).filter(x => x.level === 'error').length === 0, 'the Risk demo has no validation errors');
+  const r = audit('Risk demo', ex);
+  ok(r.summary.unfilled < 1e-6 && r.summary.endTime > plain.summary.endTime, 'the Risk demo fills every fill, and weather makes it later than the plain road');
+  const job = Risk.create(ex); while (!job.done) job.step(250);
+  const res = job.result;
+  ok(res.p80 >= res.p50 && res.finishedPct === 100 && res.sections.length === 11, 'the Risk demo analysis: every run finishes, the 80% date is not before the 50% date, 11 sections reported');
+  ['D1', 'D2'].forEach(id => { const sc = withMods(Model.exampleSimple(), { [id]: true }); ok(Model.validate(sc).filter(x => x.level === 'error').length === 0, id + ' on with defaults: no validation errors'); });
+  const sc = withMods(Model.exampleSimple(), {}, { D1: { lostDays: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], winterOn: true, winterFrom: '11-01', winterTo: '11-15', random: true, seed: 42 }, D2: { runs: 77, seed: 9, breakdownPct: 3 } });
+  ['D1', 'D2'].forEach(id => (sc.setup.modules[id] = true)); const before = JSON.stringify([sc.modules.D1, sc.modules.D2]);
+  ['D1', 'D2'].forEach(id => (sc.setup.modules[id] = false));
+  const back = Model.normalise(JSON.parse(JSON.stringify(sc))); ['D1', 'D2'].forEach(id => (back.setup.modules[id] = true));
+  ok(JSON.stringify([back.modules.D1, back.modules.D2]) === before, 'D1 and D2 entries survive switching off, saving, loading and switching on again');
+}
+
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
 {
   const a = Model.exampleSimple(); a.setup.level = 'custom'; a.modules.B1 = { site: { fleet: 12 }, mode: 'site' };

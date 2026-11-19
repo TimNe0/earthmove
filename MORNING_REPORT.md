@@ -11,6 +11,8 @@ STATUS: run in progress. This file is updated after every step, so it is valid e
 - A1 default compaction 1.0 (test 41).
 - `tests/perf.js`: speed harness for comparing an engine directory with `.baseline`.
 
+- Phase 6: D1 weather (deterministic fractional lost days, winter shutdown that wraps the year end, seeded random rain days) and D2 probabilistic dates (`src/risk.js`: seeded runs with random weather and breakdowns, 50%/80% dates for the job and every section, histogram, progress and cancel, runs in the Web Worker with an on-page fallback), the Weather & risk tab, Risk demo example, tests 51-53, browser script `drive_risk.js` (16 checks). Tags `phase6-engine-green`, then `phase6-green`.
+
 ## Skipped or reverted
 - **Single merged dispatcher: not adopted.** Best variant +22% (12 sections) / +7-12% (100 sections) against a 10% gate, after three attempts. Two-dispatcher rule kept. Nothing needed reverting (experiments ran on scratch copies).
 
@@ -20,6 +22,7 @@ STATUS: run in progress. This file is updated after every step, so it is valid e
 - Phase 5 complete: tests/run.js 432 checks pass, tests/diff.js 181 scenarios 0 differences; browser: drive_site 21, drive_materials 24, drive5 23, drive7 7 all pass.
 
 ## Open items
+- D2 breakdowns are per loading point per day, not per excavator when B5 is in 'individual machines' mode (simplification; B6 uptime is still applied separately, so a job with both counts both).
 - The greedy nearest-fill dispatcher is not monotone: a constraint can occasionally improve the result (see DECISIONS 13). Not a bug, but the optimiser may find large gains on constrained jobs.
 
 ## Check by hand first
