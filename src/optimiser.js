@@ -82,7 +82,12 @@
     }
     let maxFlow = Math.min(sum(supply), sum(need)), mc0 = null;
     if (M && ns && nd) { mc0 = minCostFlow(supply, need, cost); maxFlow = mc0.total; }     // the most that classes and imports allow to be placed
-    const before = Engine.simulate(scn, { P });           // what the user sees now (active plan or greedy dispatch)
+    // voluntary holds: constraints a previous plan was made under that have since been removed; the search may choose to keep any of them
+    const cands = Engine.holdCandidates(scn), pCache = { '': P };
+    const heldScn = hs => Engine.applyHolds(scn, hs.map(i => cands[i]));
+    function Pof(hs) { const key = hs.join(','); if (!pCache[key]) { const P2 = Engine.prepare(heldScn(hs)); pCache[key] = P2.ids.join('|') === ids.join('|') && P2.n === P.n ? P2 : P; } return pCache[key]; }
+    const act = Engine.activePlan(scn), actHolds = act && act.holds && act.holds.length ? act.holds : null;
+    const before = actHolds ? Engine.simulate(scn, { P: Engine.prepare(Engine.applyHolds(scn, actHolds)), plan: act }) : Engine.simulate(scn, { P });           // what the user sees now (active plan or greedy dispatch)
     { const bp = before.msum ? before.msum.placedT : before.summary.tonnesMoved; if (bp > maxFlow) maxFlow = bp; } // never accept placing less soil than the dispatch it replaces, even above the flow estimate
     const beforeScore = scoreOf(goal, scoreSummary(before, scn), maxFlow);
     const job = { done: false, iter: 0, evals: 0, result: null };
@@ -91,6 +96,7 @@
     const byDist = s => Array.from({ length: nd }, (_, d) => d).sort((a, b) => cost[s * nd + a] - cost[s * nd + b] || a - b);
 
     function makePlan(st) {
+      if (st.fixed) return { arcs: st.fixed.arcs, rank: st.fixed.rank, holds: (st.holds || []).map(i => cands[i]) }; // a fixed plan (the old plan verbatim, or none = plain dispatch) run under the held constraints
       const arcs = [], rank = {}, viaSK = {}, viaKD = {}, viaS = {};
       for (const v of st.via || []) { viaSK[v.s + ':' + v.k] = (viaSK[v.s + ':' + v.k] || 0) + v.t; viaKD[v.k + ':' + v.d] = (viaKD[v.k + ':' + v.d] || 0) + v.t; viaS[v.s] = true; }
       for (let s = 0; s < ns; s++) {
@@ -101,15 +107,22 @@
       }
       for (const key in viaSK) { const [s, k] = key.split(':').map(Number); arcs.push({ from: ids[srcs[s]], to: ids[stocks[k]], tonnes: Math.ceil(viaSK[key] * 1000 - 1e-9) / 1000 }); }   // deliberate deposit ...
       for (const key in viaKD) { const [k, d] = key.split(':').map(Number); arcs.push({ from: ids[stocks[k]], to: ids[dsts[d]], tonnes: Math.ceil(viaKD[key] * 1000 - 1e-9) / 1000 }); }   // ... and the haul out again
-      return { arcs, rank };
+      return { arcs, rank, holds: (st.holds || []).map(i => cands[i]) };
     }
     function evaluate(st) {
       job.evals++;
-      const r = Engine.simulate(scn, { P, plan: makePlan(st), noLog: true });
+      const r = Engine.simulate(scn, { P: Pof(st.holds || []), plan: makePlan(st), noLog: true });
       return { score: scoreOf(goal, scoreSummary(r, scn), maxFlow), summary: r.summary };
     }
 
     // start point A: the flows the current dispatch produced, in the order each source first used them
+    // pair what goes into each stockpile with what comes out again: routes section -> pile -> fill (deposits nobody hauls out are left to the dispatcher)
+    function pairVia(dIn, dOut) {
+      const via = [];
+      stocks.forEach((_, k) => { const ins = (dIn[k] || []).map(x => ({ s: x.s, t: x.t })), outs = dOut[k] || []; let a = 0;
+        for (const o of outs) { let need = o.t; while (need > 1e-9 && a < ins.length) { const t = Math.min(need, ins[a].t), e = via.find(v => v.s === ins[a].s && v.d === o.d && v.k === k); if (e) e.t += t; else via.push({ s: ins[a].s, d: o.d, k, t }); ins[a].t -= t; need -= t; if (ins[a].t <= 1e-9) a++; } } });
+      return via;
+    }
     const depIn = {}, depOut = {};
     const FA = new Float64Array(ns * nd), first = new Float64Array(ns * nd).fill(Infinity);
     const sIdx = {}, dIdx = {}; srcs.forEach((i, s) => (sIdx[i] = s)); dsts.forEach((j, d) => (dIdx[j] = d));
@@ -124,25 +137,53 @@
       FA[s * nd + d] += before.log.t[k]; if (before.log.start[k] < first[s * nd + d]) first[s * nd + d] = before.log.start[k];
     }
     // what the dispatcher put into each stockpile and took out again becomes a planned route cut -> pile -> fill (deposits nobody hauled out are left to the dispatcher)
-    const viaA = [];
-    stocks.forEach((_, k) => { const ins = (depIn[k] || []).map(x => ({ s: x.s, t: x.t })), outs = depOut[k] || []; let a = 0;
-      for (const o of outs) { let need = o.t; while (need > 1e-9 && a < ins.length) { const t = Math.min(need, ins[a].t), e = viaA.find(v => v.s === ins[a].s && v.d === o.d && v.k === k); if (e) e.t += t; else viaA.push({ s: ins[a].s, d: o.d, k, t }); ins[a].t -= t; need -= t; if (ins[a].t <= 1e-9) a++; } } });
-    const stA = { F: FA, order: [], rank: Float64Array.from(srcs, (_, s) => s), via: viaA };
+    const viaA = pairVia(depIn, depOut);
+    const stA = { F: FA, order: [], rank: Float64Array.from(srcs, (_, s) => s), via: viaA, holds: [] };
     for (let s = 0; s < ns; s++) stA.order.push(byDist(s).sort((a, b) => first[s * nd + a] - first[s * nd + b]));
     // start point B: the exact lowest tonne-km flows, nearest first
     const mc = mc0 || minCostFlow(supply, need, cost);
-    const stB = { F: mc.F, order: Array.from({ length: ns }, (_, s) => byDist(s)), rank: Float64Array.from(srcs, (_, s) => s), via: [] };
-    const eA = evaluate(stA), eB = evaluate(stB);
+    const stB = { F: mc.F, order: Array.from({ length: ns }, (_, s) => byDist(s)), rank: Float64Array.from(srcs, (_, s) => s), via: [], holds: [] };
+    // start point C: the scenario's saved plan, even when its inputs have changed since (a stale plan is not used for dispatch, but it is a good place to start searching from)
+    let stC = null;
+    if (scn.plan && Array.isArray(scn.plan.arcs)) {
+      const FC = new Float64Array(ns * nd), seen = srcs.map(() => []), idOf = {}, kIdx = {}, cIn = {}, cOut = {};
+      srcs.forEach((i, s) => (idOf[ids[i]] = s)); const dId = {}; dsts.forEach((j, d) => (dId[ids[j]] = d)); stocks.forEach((x, k) => (kIdx[ids[x]] = k));
+      for (const a of scn.plan.arcs) {
+        const t = +a.tonnes; if (!(t > 0)) continue;
+        const s = idOf[a.from], d = dId[a.to], kd = kIdx[a.to], ks = kIdx[a.from];
+        if (s !== undefined && d !== undefined) { if (elig[s * nd + d]) { FC[s * nd + d] += t; if (seen[s].indexOf(d) < 0) seen[s].push(d); } }
+        else if (s !== undefined && kd !== undefined) (cIn[kd] = cIn[kd] || []).push({ s, t });
+        else if (ks !== undefined && d !== undefined) (cOut[ks] = cOut[ks] || []).push({ d, t });
+      }
+      const rk = Float64Array.from(srcs, (_, s) => (scn.plan.rank && scn.plan.rank[ids[srcs[s]]] !== undefined ? scn.plan.rank[ids[srcs[s]]] : s));
+      stC = { F: FC, order: srcs.map((_, s) => seen[s].concat(byDist(s).filter(d => seen[s].indexOf(d) < 0))), rank: rk, via: pairVia(cIn, cOut), holds: [] };
+    }
+    const eA = evaluate(stA), eB = evaluate(stB), eC = stC ? evaluate(stC) : null;
     let cur = eB.score < eA.score ? stB : stA, curE = eB.score < eA.score ? eB : eA;
+    if (eC && eC.score < curE.score) { cur = stC; curE = eC; }
+    if (stC && cands.length) { // the old plan together with every constraint it was made under: reproduces the old schedule, so the search can never do worse than it
+      const stH = Object.assign(clone(stC), { holds: cands.map((_, i) => i) }), eH = evaluate(stH);
+      if (eH.score < curE.score) { cur = stH; curE = eH; }
+    }
     let best = cur, bestE = curE;
+    if (cands.length) { // plain dispatch with every removed constraint kept: the old schedule itself, so the result can never be worse than it
+      const fixedSt = fx => ({ fixed: fx, F: new Float64Array(ns * nd), order: stA.order, rank: stA.rank, via: [], holds: cands.map((_, i) => i) });
+      const fixes = [{ arcs: [], rank: {} }]; if (scn.plan && Array.isArray(scn.plan.arcs) && scn.plan.arcs.length) fixes.push({ arcs: scn.plan.arcs, rank: scn.plan.rank || {} });
+      for (const fx of fixes) { const st0 = fixedSt(fx), e0 = evaluate(st0); if (e0.score < bestE.score) { best = st0; bestE = e0; } }
+    }
     const startScore = curE.score;
     const bs0 = scoreSummary(before, scn), unit = goal === 'completion' ? 1440 : goal === 'utilisation' ? 1e4 : goal === 'cost' ? Math.max(50, 0.002 * (bs0.costTotal || 0)) : goal === 'carbon' ? Math.max(5, 0.002 * (bs0.co2 || 0) * 1000) : Math.max(20, 0.002 * before.summary.tonneKm);
     const T0 = 0.5 * unit, T1 = 0.02 * unit;
     let lastProg = { iter: 0, evals: job.evals, frac: 0, bestScore: bestE.score, baseScore: beforeScore, startScore, bestSummary: bestE.summary };
 
-    function clone(st) { return { F: st.F.slice(), order: st.order.slice(), rank: st.rank.slice(), via: (st.via || []).map(v => ({ s: v.s, d: v.d, k: v.k, t: v.t })) }; }
+    function clone(st) { return { fixed: null, holds: (st.holds || []).slice(), F: st.F.slice(), order: st.order.slice(), rank: st.rank.slice(), via: (st.via || []).map(v => ({ s: v.s, d: v.d, k: v.k, t: v.t })) }; }
     const loadsOf = () => Math.max(P.loadT, 1e-6) * Math.pow(2, Math.floor(rand() * 8));
     function propose(st) {
+      if (cands.length && rand() < 0.08) { // keep a removed constraint, or drop one that was being kept
+        const c = clone(st), q = Math.floor(rand() * cands.length), at = c.holds.indexOf(q);
+        if (at >= 0) c.holds.splice(at, 1); else c.holds.push(q);
+        c.holds.sort((a, b) => a - b); return c;
+      }
       if (nk && rand() < 0.12) { // route part of a flow through a stockpile, or undo such a route (only drawn when the job has stockpiles)
         const c = clone(st);
         if (c.via.length && rand() < 0.4) { const v = c.via.splice(Math.floor(rand() * c.via.length), 1)[0]; c.F[v.s * nd + v.d] += v.t; return c; }
@@ -217,16 +258,17 @@
       // a plan that routes soil through a stockpile and only ties with plain dispatch is still kept: it writes the stockpile route down instead of leaving it to the dispatcher's fallback
       const tiesWithRoute = !(bestE.score < beforeScore - 1e-6) && Math.abs(bestE.score - beforeScore) <= 1e-6 && (best.via || []).length > 0;
       const better = bestE.score < beforeScore - 1e-6 || tiesWithRoute;
-      const result = { improved: better, cancelled: !!cancelled, goal, iterations: job.iter, evals: job.evals, seconds: (Date.now() - t0) / 1000, before: pack(before), after: null, plan: null, matchesDispatch: tiesWithRoute };
+      const result = { optCheck: { goal, sig: Engine.sigOf(scn), ctx: Engine.constraintCtx(actHolds ? Engine.applyHolds(scn, actHolds) : scn) }, improved: better, cancelled: !!cancelled, goal, iterations: job.iter, evals: job.evals, seconds: (Date.now() - t0) / 1000, before: pack(before), after: null, plan: null, matchesDispatch: tiesWithRoute };
       if (better) {
-        const pl = makePlan(best);
-        const plan = { goal, sig: Engine.sigOf(scn), active: true, arcs: pl.arcs, rank: pl.rank };
-        const after = Engine.simulate(scn, { P, plan });
+        const pl = makePlan(best), hs = best.holds || [];
+        const plan = { goal, sig: Engine.sigOf(scn), active: true, arcs: pl.arcs, rank: pl.rank, ctx: Engine.constraintCtx(hs.length ? heldScn(hs) : scn) };
+        if (hs.length) plan.holds = pl.holds;
+        const after = Engine.simulate(scn, { P: Pof(hs), plan });
         result.after = pack(after); result.plan = plan;
       } else result.after = result.before;
       // E1/E2: cost and carbon before and after, when those modules are on
       const cb = before.csum ? Engine.costCarbon(scn, before) : null;
-      if (cb) { result.before.cost = cb.total; result.before.co2t = cb.co2t; const ca = result.after === result.before ? cb : Engine.costCarbon(scn, Engine.simulate(scn, { P, plan: result.plan })); if (ca) { result.after = Object.assign({}, result.after, { cost: ca.total, co2t: ca.co2t }); } }
+      if (cb) { result.before.cost = cb.total; result.before.co2t = cb.co2t; const ca = result.after === result.before ? cb : Engine.costCarbon(scn, Engine.simulate(scn, { P: Pof(best.holds || []), plan: result.plan })); if (ca) { result.after = Object.assign({}, result.after, { cost: ca.total, co2t: ca.co2t }); } }
       job.result = result;
     }
     job.cancel = () => finish(true);

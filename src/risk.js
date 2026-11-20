@@ -29,7 +29,9 @@
     const md = (scn.modules || {}).D2 || {}, mods = (scn.setup && scn.setup.modules) || {};
     const runs = Math.max(1, Math.floor(+md.runs) || 200), seed = Math.floor(+md.seed) || 1, pBrk = Math.min(1, Math.max(0, (+md.breakdownPct || 0) / 100));
     const useWeather = !!mods.D1;
-    const P = Engine.prepare(scn), plan = Engine.activePlan(scn), n = P.n;
+    const plan = Engine.activePlan(scn);
+    if (plan && plan.holds && plan.holds.length) scn = Engine.applyHolds(scn, plan.holds); // constraints the plan chose to keep
+    const P = Engine.prepare(scn), n = P.n;
     const base = Engine.simulate(scn, { P, plan, noLog: true, levels: true });
     const job = { done: false, runsDone: 0, total: runs, result: null };
     const comp = [], lev = []; for (let i = 0; i < n; i++) lev.push([]);

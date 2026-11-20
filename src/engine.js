@@ -455,6 +455,51 @@
   function activePlan(scn) { const p = scn.plan; return p && p.active !== false && p.sig === sigOf(scn) ? p : null; }
   function planStatus(scn) { const p = scn.plan; return !p ? 'none' : p.sig !== sigOf(scn) ? 'stale' : p.active === false ? 'off' : 'on'; }
 
+
+  // ---------- voluntary holds ----------
+  // The dispatcher is greedy, so taking a constraint away can make the same plan finish later. When the optimiser is run again after
+  // a constraint was removed, it may therefore choose to KEEP it: the plan then carries a hold. plan.ctx is the set of constraints in
+  // force when the plan was made; any that are no longer in the inputs are the candidate holds.
+  const modOnOf = (scn, id) => !!(scn.setup && scn.setup.modules && scn.setup.modules[id]);
+  function constraintCtx(scn) {
+    const md = scn.modules || {}, on = id => modOnOf(scn, id), c = { open: {}, c1: [], c2: [], c3: [], c4: null, c5: null, hol: false, d1: null };
+    scn.sections.forEach(x => { if (x.openFrom) c.open[x.id] = x.openFrom; });
+    if (on('C1')) c.c1 = (md.C1.blocks || []).map(b => JSON.parse(JSON.stringify(b)));
+    if (on('C2')) c.c2 = (md.C2.stretches || []).map(b => JSON.parse(JSON.stringify(b)));
+    if (on('C3')) c.c3 = (md.C3.periods || []).map(b => JSON.parse(JSON.stringify(b)));
+    if (on('C4')) c.c4 = JSON.parse(JSON.stringify(md.C4));
+    if (on('C5')) c.c5 = md.C5.publicLimit;
+    if (on('D4')) c.hol = !!md.D4.holidaysOn;
+    if (on('D1')) c.d1 = JSON.parse(JSON.stringify({ lostDays: md.D1.lostDays, winterOn: md.D1.winterOn }));
+    return c;
+  }
+  function holdCandidates(scn) {
+    const was = scn.plan && scn.plan.ctx ? scn.plan.ctx : scn.optCheck && scn.optCheck.ctx; if (!was) return [];
+    const now = constraintCtx(scn), out = [], secName = id => { const x = scn.sections.find(y => y.id === id); return x ? x.name : id; };
+    for (const id in was.open) if (scn.sections.some(x => x.id === id) && (now.open[id] || '') < was.open[id]) out.push({ k: 'open', sec: id, date: was.open[id], text: 'keeps ' + secName(id) + ' shut until ' + fmtDay(parseISO(was.open[id])) });
+    [['c1', 'blockage'], ['c2', 'single-lane stretch'], ['c3', 'closed period']].forEach(([key, nm]) => was[key].forEach(it => { if (!now[key].some(y => y.id === it.id)) out.push({ k: key, item: it, text: 'keeps the ' + nm + ' "' + (it.name || it.note || it.id) + '"' }); }));
+    if (was.c4 && JSON.stringify(was.c4) !== JSON.stringify(now.c4)) out.push({ k: 'c4', val: was.c4, text: 'keeps the layered-fill rules' });
+    if (was.c5 !== null && (now.c5 === null || +was.c5 < +now.c5)) out.push({ k: 'c5', val: was.c5, text: 'keeps the public-movement cap of ' + was.c5 + ' a day' });
+    if (was.hol && !now.hol) out.push({ k: 'hol', text: 'keeps bank holidays as days off' });
+    if (was.d1 && JSON.stringify(was.d1) !== JSON.stringify(now.d1)) out.push({ k: 'd1', val: was.d1, text: 'keeps the expected weather losses' });
+    return out;
+  }
+  // a copy of the scenario with the held constraints put back (switching their module on if it was switched off)
+  function applyHolds(scn, holds) {
+    const o = JSON.parse(JSON.stringify(scn)); delete o.plan; const md = o.modules, on = id => (o.setup.modules[id] = true);
+    for (const h of holds) {
+      if (h.k === 'open') { const x = o.sections.find(y => y.id === h.sec); if (x && (x.openFrom || '') < h.date) x.openFrom = h.date; }
+      else if (h.k === 'c1') { on('C1'); if (!md.C1.blocks.some(y => y.id === h.item.id)) md.C1.blocks.push(JSON.parse(JSON.stringify(h.item))); }
+      else if (h.k === 'c2') { on('C2'); if (!md.C2.stretches.some(y => y.id === h.item.id)) md.C2.stretches.push(JSON.parse(JSON.stringify(h.item))); }
+      else if (h.k === 'c3') { on('C3'); if (!md.C3.periods.some(y => y.id === h.item.id)) md.C3.periods.push(JSON.parse(JSON.stringify(h.item))); }
+      else if (h.k === 'c4') { on('C4'); md.C4 = JSON.parse(JSON.stringify(h.val)); }
+      else if (h.k === 'c5') { on('C5'); md.C5.publicLimit = h.val; }
+      else if (h.k === 'hol') { on('D4'); md.D4.holidaysOn = true; }
+      else if (h.k === 'd1') { on('D1'); md.D1.lostDays = h.val.lostDays.slice(); md.D1.winterOn = h.val.winterOn; }
+    }
+    return o;
+  }
+
   // ---------- simulation ----------
   // opts: { plan (default: the scenario's active plan), P (prepared arrays, reused by the optimiser),
   //         noLog (fast path: summary only), horizonDays }
@@ -463,6 +508,10 @@
   // classes, import and export gates, stockpiles). With the material modules at neutral settings the two must agree exactly: tests/diff.js checks it.
   function simulate(scn, opts) {
     opts = opts || {};
+    if (!opts.P) { // a plan may carry voluntary holds: constraints the optimiser chose to keep after they were removed from the inputs
+      const pl = opts.plan !== undefined ? opts.plan : activePlan(scn);
+      if (pl && pl.holds && pl.holds.length) { scn = applyHolds(scn, pl.holds); opts = Object.assign({}, opts, { plan: pl }); }
+    }
     const P = opts.P || prepare(scn);
     return (P.cfg.full || opts.dayOff || opts.breakdown || opts.levels ? simulateFull : simulateCore)(scn, opts.P ? opts : Object.assign({}, opts, { P }));
   }
@@ -1420,5 +1469,5 @@
   }
   function startedBy(res, t) { return upperBound(res.log.start, t); } // log.start is non-decreasing
 
-  return { massHaul, costCarbon, mulberry, buildDayOff, lateness, ukHolidays, holidayList, DAY, parseISO, hm, dayToISO, fmtDay, fmtClock, fmtTime, dowOf, DOW_NAMES, netQty, lineFactor, lineTonnes, prepare, dist, travelMin, tripL, tripE, tripX, simulate, minCostFlow, sigOf, activePlan, planStatus, buildSeries, remainingAt, upperBound, startedBy, truckStats, trucksAt, nextActive, chartData };
+  return { massHaul, costCarbon, mulberry, buildDayOff, lateness, ukHolidays, holidayList, DAY, parseISO, hm, dayToISO, fmtDay, fmtClock, fmtTime, dowOf, DOW_NAMES, netQty, lineFactor, lineTonnes, prepare, dist, travelMin, tripL, tripE, tripX, simulate, minCostFlow, sigOf, activePlan, planStatus, constraintCtx, holdCandidates, applyHolds, buildSeries, remainingAt, upperBound, startedBy, truckStats, trucksAt, nextActive, chartData };
 });
