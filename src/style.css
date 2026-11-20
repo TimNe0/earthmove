@@ -137,3 +137,8 @@ td.acc .chk{display:inline-block;margin-right:8px;font-size:12px;white-space:now
   #report h1{font-size:20px;margin:0 0 4px} #report h2{font-size:14px;margin:14px 0 2px;break-after:avoid}
   #report img{max-height:230mm;break-inside:avoid}
 }
+
+/* placeholder rates */
+input.dflt{background:rgba(183,121,31,.14);border-color:var(--warn)}
+.dtag{margin-left:6px;font-size:11px;color:var(--warn);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+.ratenote a{cursor:pointer;text-decoration:underline}

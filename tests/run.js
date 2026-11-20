@@ -1557,6 +1557,61 @@ console.log('\n60. STOCKPILE DEMO: the cut closes before its only fill opens; th
   ok(Optim.scoreOf('completion', pr.summary, 400) < Optim.scoreOf('completion', nr.summary, 400), 'the planned route scores better than the no-stockpile result');
 }
 
+console.log('\n61. PLACEHOLDER RATES: cost, fuel burn and weather values still at their shipped defaults');
+{
+  // hand: E1 has 5 rates, E2 has 3 burn rates, D1 has 12 monthly lost-day values, D2 has 1 breakdown chance.
+  // E2's burn rates also drive cost when only E1 is on, so E1 alone lists 5 + 3 = 8; D1 + D2 list 12 + 1 = 13.
+  const com = Model.exampleCommercial(), risk = Model.exampleRisk(), plain = Model.exampleSimple();
+  ok(Model.defaultRates(plain).length === 0, 'no rate modules on: nothing is a placeholder');
+  ok(Model.defaultRates(com).length === 8, 'Commercial demo (E1 + E2): 5 cost + 3 fuel burn = 8 placeholders (' + Model.defaultRates(com).length + ')');
+  const e1only = Model.exampleSimple(); e1only.setup.modules.E1 = true;
+  ok(Model.defaultRates(e1only).length === 8, 'E1 alone still lists the three fuel burn rates it uses (8)');
+  ok(Model.defaultRates(risk).length === 13, 'Risk demo (D1 + D2): 12 months + 1 breakdown chance = 13 placeholders (' + Model.defaultRates(risk).length + ')');
+  ok(Model.rateNoteText(com) === 'using default rates (cost rates, fuel burn)' && Model.rateNoteText(risk) === 'using default rates (weather and breakdowns)' && Model.rateNoteText(plain) === '', 'the note names which kinds of rate are defaults, and is empty when none are');
+  // entering a different number clears that one only
+  const c2 = Model.exampleCommercial(), f = Model.RATE_FIELDS.find(x => x.id === 'E1.lorryRate');
+  Model.rateSet(c2, f, 52);
+  ok(Model.defaultRates(c2).length === 7 && !Model.defaultRates(c2).some(x => x.id === 'E1.lorryRate'), 'changing lorry hire from 45 to 52 leaves 7 placeholders');
+  // typing the same number as the default still counts as entering it (confirm), and weather month values are separate fields
+  const f2 = Model.RATE_FIELDS.find(x => x.id === 'D1.lostDays.0'), r2 = Model.exampleRisk();
+  Model.confirmRate(r2, f2.id); ok(Model.defaultRates(r2).length === 12 && Model.rateGet(r2, f2) === 5, 'confirming January (5 days, unchanged) leaves 12 placeholders and keeps its value');
+  Model.rateSet(r2, Model.RATE_FIELDS.find(x => x.id === 'D1.lostDays.5'), 2);
+  ok(Model.defaultRates(r2).length === 11, 'changing June leaves 11');
+  Model.confirmRates(r2); ok(Model.defaultRates(r2).length === 0 && Model.rateNoteText(r2) === '', 'confirming the rest clears every placeholder and the note');
+  // confirming rates is not a dispatch input: a saved plan must not go stale, and results do not change
+  const c3 = Model.exampleCommercial(), sig0 = Engine.sigOf(c3), end0 = Engine.simulate(c3).summary.endTime; Model.confirmRates(c3);
+  ok(Engine.sigOf(c3) === sig0 && Engine.simulate(c3).summary.endTime === end0, 'confirming rates changes neither the plan signature nor the result');
+  // survives save and load
+  const rt = Model.normalise(JSON.parse(JSON.stringify(c2)));
+  ok(Model.defaultRates(rt).length === 7, 'which rates are confirmed survives a save and load');
+  // exports: the programme CSV gets a Note column only when weather defaults could affect its dates
+  const rk = Model.exampleRisk(); rk.setup.modules.E4 = true; const rr = Engine.simulate(rk);
+  ok(/,Note\r\n/.test(Model.programmeCSV(rk, rr).split('\r\n')[0] + '\r\n') && /Using default rates \(weather and breakdowns\)/.test(Model.programmeCSV(rk, rr)), 'programme CSV: a Note column says the dates use default weather rates');
+  Model.confirmRates(rk); ok(!/Note/.test(Model.programmeCSV(rk, Engine.simulate(rk))), 'once confirmed the programme CSV has no Note column');
+  const cm = Model.exampleCommercial(); cm.setup.modules.E4 = true; ok(!/Note/.test(Model.programmeCSV(cm, Engine.simulate(cm))), 'cost-only defaults do not touch the programme dates, so no Note column');
+}
+
+console.log('\n62. VOLUNTARY HOLDS: a plan may keep a constraint that was removed, and the engine honours it');
+{
+  // Site demo: with the River bridge blockage the dispatcher finishes at minute 92871; without it, the same greedy dispatch finishes at 92961 (decision 13).
+  // Optimising the relaxed scenario must therefore keep the blockage as a hold (or find something at least as good), and running the saved plan
+  // through the ordinary simulate(scn) must reproduce the optimiser's own result exactly.
+  const clone = o => JSON.parse(JSON.stringify(o)), base = Model.exampleSite(), A = runOpt(clone(base), 'completion', 1e9, { maxIter: 150 });
+  const x = clone(base); x.modules.C1.blocks = []; const sc = Model.normalise(x); sc.optCheck = clone(A.optCheck); if (A.plan) sc.plan = clone(A.plan);
+  const cands = Engine.holdCandidates(sc);
+  ok(cands.length === 1 && cands[0].k === 'c1' && /River bridge/.test(cands[0].text), 'removing the bridge leaves one candidate hold, worded in plain English: "' + (cands[0] && cands[0].text) + '"');
+  ok(Engine.simulate(sc, { plan: null }).summary.endTime > A.after.endTime, 'direction: plain dispatch without the bridge finishes later than with it (decision 13)');
+  const B = runOpt(sc, 'completion', 1e9, { maxIter: 150 });
+  ok(B.after.endTime <= A.after.endTime, 'the optimised finish without the bridge is no later than with it (' + B.after.endTime + ' vs ' + A.after.endTime + ')');
+  ok(B.improved && B.plan && B.plan.holds && B.plan.holds.length === 1, 'the plan keeps the bridge as a hold');
+  const sc2 = Model.normalise(clone(x)); sc2.plan = clone(B.plan); sc2.plan.sig = Engine.sigOf(sc2);
+  const re = audit('plan with a hold, through plain simulate()', sc2);
+  ok(Engine.planStatus(sc2) === 'on' && re.summary.endTime === B.after.endTime, 'simulate(scn) applies the hold and reproduces the optimiser result (' + re.summary.endTime + ')');
+  ok(Model.validate(sc2).every(i => i.level !== 'error'), 'the scenario itself is still without the bridge: the inputs are untouched');
+  // a plan with no holds goes through the same path as before (simulate does not copy the scenario)
+  ok(Engine.simulate(base).summary.endTime === Engine.simulate(clone(base)).summary.endTime, 'a scenario with no plan is simulated unchanged');
+}
+
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
 {
   const a = Model.exampleSimple(); a.setup.level = 'custom'; a.modules.B1 = { site: { fleet: 12 }, mode: 'site' };

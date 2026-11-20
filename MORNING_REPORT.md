@@ -110,3 +110,13 @@ Hand calculations are in the test files next to the simulated result (tests 41-5
 
 ---
 **Final state:** `master` was fast-forwarded to `phases567` (tag `phases567-done`), everything green. The live page at http://192.168.1.15:8090/earthmove.html was rebuilt from it and returns 200. Only my own scratch servers (port 8091) were ever started and stopped; the live server on 8090 was never touched except by rebuilding `dist/`. The `step2-scaffold` branch and the `phases567` branch are left in place (nothing deleted except `phase4-materials`, as instructed).
+
+
+---
+# Follow-ups (branch `followups`, for your review; `master` and `dist/` not touched)
+
+1. **Non-monotone dispatch: fixed and tested.** `tests/monotone.js` (28 constraint removals across all 7 examples, 3 seeds): 4 failures before, 0 after. Fix: warm start from the previous plan, plus "voluntary holds" (a plan may keep a constraint you removed, and says so). The label "Simple dispatch, not optimised" now appears on the header, Results, printed report, CSV exports and Scenarios; comparing two scenarios warns when either is not optimised. Decisions 29-31.
+2. **Stockpile planning: proved against "no stockpile", not against plain dispatch.** New Stockpile demo, hand-checked (test 60). The optimiser now plans cut -> pile -> fill and beats the no-stockpile result (nothing moves without the pile), but plain dispatch does the same by itself. Decision 32 has the detail and what I changed to make the optimiser choose the route.
+3. **Placeholder rates.** 21 values are flagged (5 cost, 3 fuel burn, 12 monthly weather, 1 breakdown). "Using default rates" shows beside cost, carbon and risk results, on the printed report and in the CSVs. One tab, "Default rates", lists them all. Decision 33.
+
+Tests: `tests/run.js` all pass (new tests 60, 61, 62), `tests/diff.js` 181 scenarios 0 differ, `tests/monotone.js` 0 failures, speed within noise of baseline (S12 2.70-2.73 ms vs 2.73-2.79; S100 130.9-132.2 vs 130.9-131.5), browser: new `drive_followups.js` (26 checks) plus drive5, drive7, drive_commercial, drive_materials, drive_site, drive_risk, drive_optimiser all pass. Limits are in decision 34.

@@ -65,7 +65,7 @@
       maxTh = 1; for (let i = 0; i < res.P.n; i++) maxTh = Math.max(maxTh, Math.abs(res.P.qty[i]) / res.P.len[i]);
     }
     S.t = Math.min(S.t, endT);
-    $('modbadge').textContent = MOD.badgeText(scn) + (planText() ? '. ' + planText() : ''); $('btnReplay').hidden = !modOn('E7');
+    $('modbadge').textContent = MOD.badgeText(scn) + '. ' + planText(); $('btnReplay').hidden = !modOn('E7');
     if ($('scnname') !== document.activeElement) $('scnname').value = scn.name;
     tcBuild(); tcLayout();
     renderBanner(); renderTabs(rebuildTable); updateClock(); S.dirty = true; autosave();
@@ -399,7 +399,7 @@
   })();
 
   // ---------- tabs ----------
-  const tabsList = () => [['sections', 'Sections']].concat(['B1', 'B2', 'B3', 'B4', 'B5', 'B6'].some(modOn) ? [['fleet', 'Fleet & plant']] : [], anyA() ? [['materials', 'Materials & sites']] : [], anySite() ? [['site', 'Site & calendar']] : [], anyRisk() ? [['risk', 'Weather & risk']] : [], anyCommercial() ? [['commercial', 'Cost & carbon']] : [], modOn('E6') ? [['actuals', 'Actual progress']] : [], modOn('E3') ? [['masshaul', 'Mass haul']] : [], [['results', 'Results'], ['log', 'Movement log']]).concat(MOD.activeIds(scn).indexOf('D5') >= 0 ? [['scenarios', 'Scenarios']] : [], [['messages', 'Messages']]);
+  const tabsList = () => [['sections', 'Sections']].concat(['B1', 'B2', 'B3', 'B4', 'B5', 'B6'].some(modOn) ? [['fleet', 'Fleet & plant']] : [], anyA() ? [['materials', 'Materials & sites']] : [], anySite() ? [['site', 'Site & calendar']] : [], anyRisk() ? [['risk', 'Weather & risk']] : [], anyCommercial() ? [['commercial', 'Cost & carbon']] : [], M.rateFieldsOn(scn).length ? [['rates', M.defaultRates(scn).length ? 'Default rates (' + M.defaultRates(scn).length + ')' : 'Rates']] : [], modOn('E6') ? [['actuals', 'Actual progress']] : [], modOn('E3') ? [['masshaul', 'Mass haul']] : [], [['results', 'Results'], ['log', 'Movement log']]).concat(MOD.activeIds(scn).indexOf('D5') >= 0 ? [['scenarios', 'Scenarios']] : [], [['messages', 'Messages']]);
   function renderTabs(rebuildTable) {
     const tabs = $('tabs'); tabs.replaceChildren();
     const nMsg = allMessages().filter(m => m.level !== 'info').length;
@@ -409,6 +409,7 @@
     if (S.tab === 'sections') { if (rebuildTable || !body.firstChild || !body.querySelector('#sectable')) renderSections(); else updateChainage(); }
     else if (S.tab === 'fleet') { if (rebuildTable || !body.querySelector('#fleetpane')) renderFleet(); }
     else if (S.tab === 'commercial') { if (rebuildTable || !body.querySelector('#compane')) renderCommercial(); }
+    else if (S.tab === 'rates') renderRates();
     else if (S.tab === 'actuals') renderActuals();
     else if (S.tab === 'masshaul') renderMassHaul();
     else if (S.tab === 'risk') { if (rebuildTable || !body.querySelector('#riskpane')) renderRisk(); }
@@ -418,6 +419,7 @@
     else if (S.tab === 'log') renderLog();
     else if (S.tab === 'scenarios') renderScenarios();
     else renderMessages();
+    markDefaults(body);
   }
   const SETTINGS = [['startDate', 'Project start date', 'date'], ['speedKph', 'Average travel speed (kph)', 'number'], ['loadTonnes', 'Average load (tonnes)', 'number'], ['loadMinutes', 'Loading time per lorry (min)', 'number'], ['maxMovesPerDay', 'Max movements per day (whole site)', 'number']];
   function bindNum(inp, obj, key) { inp.addEventListener('input', () => { obj[key] = inp.value === '' ? NaN : +inp.value; changed(false); }); }
@@ -524,7 +526,7 @@
     body.append(noMatUnits() ? h('p', { class: 'hint' }, 'Show results in ', h('select', { 'data-cell': 'settings:resUnits', onchange: ev => { scn.ui.resUnits = ev.target.value; recompute(true); } },
       h('option', { value: 'auto', selected: !['tonnes', 'm3'].includes(scn.ui.resUnits) }, 'the units I type quantities in'), h('option', { value: 'tonnes', selected: scn.ui.resUnits === 'tonnes' }, 'tonnes'), h('option', { value: 'm3', selected: scn.ui.resUnits === 'm3' }, 'cubic metres (at ' + scn.settings.density + ' t per m³)')), ' (this changes only how results are shown)')
       : h('p', { class: 'hint' }, 'Results are shown in tonnes, which is exact: each soil type has its own density.'));
-    body.append(h('div', { class: 'note' }, MOD.badgeText(scn) + '. ' + (planText() || 'Dispatch: nearest available destination (no optimised plan).')),
+    body.append(h('div', { class: 'note' }, MOD.badgeText(scn) + '. ' + planText()),
       h('div', { class: 'stats' },
         stat(s.completion === null ? 'Not complete' : E.fmtDay(P.startDay + s.completionDay), 'Overall completion'),
         stat(fmt(s.moves), 'Movements'), stat(Q(s.tonnesMoved) + ' ' + RL() + '', 'Soil moved'), stat(fmt(s.tonneKm) + ' t·km', 'Total tonne-km'),
@@ -553,7 +555,7 @@
     }
     if (modOn('E1') || modOn('E2')) { // E1/E2: cost and carbon
       const cc = E.costCarbon(scn, res), money = v => '\u00a3' + fmt(v);
-      if (cc) body.append(h('h3', {}, 'Cost and carbon'), h('div', { class: 'stats' }, modOn('E1') ? [stat(money(cc.total), 'Total cost'), stat('\u00a3' + (cc.perTonne || 0).toFixed(2), 'Cost per tonne placed'), stat(money(cc.hire), 'Plant hire'), stat(money(cc.fuel), 'Fuel'), stat(money(cc.labour), 'Labour'), stat(money(cc.tip), 'Tip fees and purchases')] : null,
+      if (cc) body.append(...[h('h3', {}, 'Cost and carbon'), rateNote(['cost', 'fuel'])].filter(Boolean), h('div', { class: 'stats' }, modOn('E1') ? [stat(money(cc.total), 'Total cost'), stat('\u00a3' + (cc.perTonne || 0).toFixed(2), 'Cost per tonne placed'), stat(money(cc.hire), 'Plant hire'), stat(money(cc.fuel), 'Fuel'), stat(money(cc.labour), 'Labour'), stat(money(cc.tip), 'Tip fees and purchases')] : null,
         modOn('E2') ? [stat(cc.co2t.toFixed(1) + ' t CO\u2082e', 'Carbon'), stat(fmt(cc.litres) + ' litres', 'Fuel burned')] : null, stat(fmt(cc.lorryH) + ' / ' + fmt(cc.excH) + ' / ' + fmt(cc.recvH) + ' h', 'Lorry / loader / receiving plant hours')));
     }
     if (modOn('D3')) { // D3: target dates
@@ -859,6 +861,49 @@
   // ---------- fleet and plant tab (B1 to B6) ----------
   // ---------- Cost & carbon (E1, E2) and the programme export (E4) ----------
   function exportProgramme() { if (res) download(slug() + '_programme.csv', '﻿' + M.programmeCSV(scn, res), 'text/csv'); }
+  // ---------- placeholder rates: tags, notes and the one screen to enter real numbers ----------
+  const rateOfCell = cell => M.rateFieldsOn(scn).find(f => f.cell === cell);
+  // tint every rate input that still holds its shipped default, with a small "default" tag beside it
+  function markDefaults(root) {
+    root.querySelectorAll('.dtag.mk').forEach(x => x.remove()); root.querySelectorAll('input.dflt').forEach(x => x.classList.remove('dflt'));
+    root.querySelectorAll('input[data-cell^="mod:"]').forEach(inp => {
+      const f = rateOfCell(inp.getAttribute('data-cell')); if (!f || !M.rateIsDefault(scn, f) || inp.closest('#ratetable')) return;
+      inp.classList.add('dflt'); inp.title = 'Default rate: replace it with yours'; inp.after(h('small', { class: 'dtag mk' }, 'default'));
+    });
+  }
+  // typing in a rate confirms it: from then on it is your number, even if it equals the default
+  $('tabbody').addEventListener('input', ev => {
+    const inp = ev.target, f = inp && inp.getAttribute && rateOfCell(inp.getAttribute('data-cell') || '');
+    if (!f || inp.value === '') return;
+    M.confirmRate(scn, f.id); inp.classList.remove('dflt'); if (inp.nextSibling && inp.nextSibling.classList && inp.nextSibling.classList.contains('mk')) inp.nextSibling.remove();
+    autosave();
+  });
+  // "using default rates" beside cost, carbon and risk results; groups limits it to the rates that result depends on
+  function rateNote(groups) {
+    const t = M.rateNoteText(scn, groups); if (!t) return null;
+    return h('div', { class: 'note warn ratenote' }, 'Result ' + t + ': these are placeholders, not your numbers. ', h('a', { onclick: () => { S.tab = 'rates'; renderTabs(true); } }, 'Enter your rates'));
+  }
+  function renderRates() {
+    const body = $('tabbody'); body.replaceChildren();
+    const fields = M.rateFieldsOn(scn), left = () => M.defaultRates(scn).length;
+    const head = h('p', { id: 'ratehead' });
+    const upd = () => { head.textContent = left() ? left() + ' of ' + fields.length + ' values are still the defaults that came with the program. Results that use them say so. Type your own numbers below (typing in a row marks it as yours).' : 'All ' + fields.length + ' values have been entered or confirmed as yours.'; };
+    upd();
+    const rows = []; let group = '';
+    fields.forEach(f => {
+      if (f.group !== group) { group = f.group; rows.push(h('tr', {}, h('th', { colspan: 6, style: 'text-align:left;padding-top:10px' }, group === 'cost' ? 'E1  Cost rates' : group === 'fuel' ? 'E2  Fuel burn' : 'D1, D2  Weather and breakdowns'))); }
+      const tag = h('span', {}, '');
+      const showTag = () => { const d = M.rateIsDefault(scn, f); tag.textContent = d ? 'default' : 'yours'; tag.className = d ? 'dtag' : ''; tag.style.color = d ? '' : 'var(--ok)'; tag.style.fontWeight = '600'; };
+      const inp = h('input', { type: 'number', step: 'any', value: M.rateGet(scn, f), style: 'width:110px', 'data-cell': f.cell });
+      inp.addEventListener('input', () => { if (inp.value === '') return; M.rateSet(scn, f, +inp.value); showTag(); upd(); changed(false); });
+      showTag();
+      rows.push(h('tr', {}, h('td', {}, f.label), h('td', {}, f.mod), h('td', {}, inp), h('td', {}, f.unit), h('td', {}, tag), h('td', { class: 'hint' }, 'was ' + M.rateDefault(f))));
+    });
+    body.append(h('h3', {}, 'Default rates'), head,
+      h('p', {}, h('button', { onclick: () => { M.confirmRates(scn); autosave(); renderTabs(true); recompute(false); } }, 'Confirm all the rest as our real values'), ' ', h('span', { class: 'hint' }, 'Use this when the numbers shown are already right.')),
+      h('div', { class: 'scroll' }, h('table', { id: 'ratetable' }, h('thead', {}, h('tr', {}, ['Item', 'Module', 'Value', 'Unit', 'Status', ''].map(c => h('th', {}, c)))), h('tbody', {}, rows))),
+      h('p', { class: 'hint' }, 'The fuel burn rates also drive cost when only E1 is on. The carbon factor (2.68 kg of CO\u2082e per litre of diesel) is the usual UK figure, not a placeholder.'));
+  }
   function renderCommercial() {
     const body = $('tabbody'); body.replaceChildren();
     const md = scn.modules, pane = h('div', { id: 'compane' });
@@ -954,8 +999,9 @@
     let box = $('report'); if (!box) { box = h('div', { id: 'report' }); document.body.append(box); }
     box.replaceChildren();
     const title = ((scn.modules.E7 || {}).title || 'Earthmove summary'), stat = (v, l) => h('tr', {}, h('th', {}, l), h('td', {}, v));
-    box.append(h('h1', {}, title), h('p', {}, scn.name + ' — printed ' + new Date().toLocaleDateString('en-GB')), h('p', { class: 'badge' }, MOD.badgeText(scn) + '. ' + (planText() || 'Dispatch: nearest available destination.')));
+    box.append(h('h1', {}, title), h('p', {}, scn.name + ' — printed ' + new Date().toLocaleDateString('en-GB')), h('p', { class: 'badge' }, MOD.badgeText(scn) + '. ' + planText()));
     if (!res) { box.append(h('p', {}, 'The model has problems that stop it running, so there are no results to print.')); return box; }
+    const dr = M.rateNoteText(scn); if (dr) box.append(h('p', { class: 'badge', style: 'font-weight:600' }, 'This report is ' + dr + ': placeholders, not site rates.'));
     const s = res.summary, P = res.P, rows = [stat(s.completion === null ? 'Not complete' : E.fmtDay(P.startDay + s.completionDay), 'Overall completion'), stat(fmt(s.moves), 'Movements'), stat(Q(s.tonnesMoved) + ' ' + RL(), 'Soil moved'), stat(fmt(s.tonneKm) + ' t·km', 'Total tonne-km'), stat((s.utilisation * 100).toFixed(1) + '%', 'Average use of the daily movement limit')];
     const cc = (modOn('E1') || modOn('E2')) ? E.costCarbon(scn, res) : null;
     if (cc && cc.total !== undefined) rows.push(stat('£' + fmt(cc.total) + ' (£' + (cc.perTonne || 0).toFixed(2) + ' a tonne)', 'Total cost'));
@@ -988,6 +1034,7 @@
     if (RISK.error) box.append(h('div', { class: 'note err' }, RISK.error));
     const r = RISK.result; if (!r) return;
     if (r.cancelled) { box.append(h('div', { class: 'note' }, 'Cancelled after ' + r.runs + ' runs.')); return; }
+    box.append(...[rateNote(['weather'])].filter(Boolean));
     if (RISK.sig !== riskSig()) box.append(h('div', { class: 'note warn' }, 'The inputs have changed since this analysis. Run it again to refresh it.'));
     const stat = (v, l) => h('div', { class: 'stat' }, h('b', {}, v), h('span', {}, l));
     box.append(h('div', { class: 'stats' }, stat(riskDate(r.p50, r), '50% confidence completion (half the runs finish by then)'), stat(riskDate(r.p80, r), '80% confidence completion'),
@@ -1284,7 +1331,14 @@
   const GOALS = Optim.GOALS;
   const EFFORT = { quick: ['Quick (about 8 s)', 8000], normal: ['Normal (about 25 s)', 25000], thorough: ['Thorough (about 90 s)', 90000] };
   const OPT = { open: false, state: 'idle', goal: 'completion', effort: 'normal', frac: 0, prog: null, result: null, worker: null, job: null, applied: false, error: '' };
-  function planText() { return E.planStatus(scn) === 'on' ? 'Optimised plan: ' + GOALS[scn.plan.goal] : ''; }
+  // How the dispatch was decided. Anything that has not been through the optimiser says so plainly, on screen, in the report and in every export.
+  function isOptimised(sc) { return E.planStatus(sc) === 'on' || !!(sc.optCheck && !sc.optCheck.improved && sc.optCheck.sig === E.sigOf(sc)); }
+  function dispatchLabel(sc) {
+    if (E.planStatus(sc) === 'on') { const hs = (sc.plan.holds || []).map(x => x.text); return 'Optimised plan: ' + GOALS[sc.plan.goal] + (hs.length ? ' (' + hs.join('; ') + ')' : ''); }
+    if (isOptimised(sc)) return 'Simple dispatch (the optimiser found nothing better for "' + GOALS[sc.optCheck.goal] + '")';
+    return 'Simple dispatch, not optimised';
+  }
+  function planText() { return dispatchLabel(scn); }
   function fmtDur(min) {
     const a = Math.abs(Math.round(min)), sg = min < 0 ? '−' : '+';
     if (a < 1) return 'no change';
@@ -1343,6 +1397,9 @@
       el.append(h('h3', {}, r.improved ? 'Result for "' + GOALS[r.goal] + '"' : 'No better plan found'),
         h('p', { class: 'hint' }, (r.cancelled ? 'Stopped early. ' : '') + fmt(r.iterations) + ' candidate plans tried in ' + r.seconds.toFixed(0) + ' s. ' + (r.improved ? '' : (r.reason || 'The current plan is the best this search found for this goal. Other limits (such as a fill that does not open until a set date) may be the real bottleneck.'))),
         optTable(r.before, r.after));
+      const hs = r.plan && r.plan.holds ? r.plan.holds.map(x => x.text) : [];
+      if (r.improved && hs.length) el.append(h('p', { class: 'hint' }, 'This plan ' + hs.join('; ') + ', because with the constraint gone the greedy dispatch finishes later than the plan made with it.'));
+      if (r.improved && r.matchesDispatch) el.append(h('p', { class: 'hint' }, 'This plan matches plain dispatch: the dispatcher would also route the soil through the stockpile. The plan writes that route down so it no longer depends on the dispatcher\'s fallback.'));
       if (r.improved) el.append(h('p', {}, OPT.applied ? h('span', { class: 'good' }, 'This plan is now in use. ') : h('button', { class: 'primary', onclick: applyPlan }, 'Use this plan'), ' ', OPT.applied ? null : h('button', { onclick: () => { OPT.state = 'idle'; OPT.result = null; renderOptPanel(); } }, 'Discard')));
     }
   }
@@ -1383,7 +1440,11 @@
     tick();
   }
   function cancelOpt() { if (OPT.worker) OPT.worker.postMessage({ cmd: 'cancel' }); else if (OPT.job) OPT.job.cancel(); }
-  function finishOpt(r) { OPT.state = 'done'; OPT.result = r; renderOptPanel(); }
+  function finishOpt(r) {
+    OPT.state = 'done'; OPT.result = r;
+    if (r.optCheck) { scn.optCheck = Object.assign({}, r.optCheck, { improved: !!r.improved }); autosave(); S.dirty = true; }  // remembered so the page can say "nothing better found" and so a later run can keep constraints that were removed
+    renderOptPanel();
+  }
   function applyPlan() {
     scn.plan = Object.assign({}, OPT.result.plan, { createdAt: Date.now() });
     OPT.applied = true; recompute(); renderOptPanel();
@@ -1396,7 +1457,7 @@
     if (M.validate(sc).some(i => i.level === 'error')) return null;
     const r = E.simulate(sc), p = Optim.pack(r), cc = E.costCarbon(sc, r);
     if (cc) { if (cc.total !== undefined) p.cost = cc.total; if (cc.co2t !== null) p.co2t = cc.co2t; }
-    p.setup = MOD.badgeText(sc); p.plan = E.planStatus(sc) === 'on' ? GOALS[sc.plan.goal] : 'nearest available';
+    p.setup = MOD.badgeText(sc); p.plan = dispatchLabel(sc); p.optimised = isOptimised(sc);
     p.completionTxt = p.completion === null ? 'not complete' : E.fmtDay(p.startDay + p.completionDay);
     return p;
   }
@@ -1427,6 +1488,8 @@
     const get = id => { if (id === 'cur') return scenStats(scn); const x = sv.find(y => y.id === id); return x ? scenStats(x.scenario) : null; };
     const A = get(CMP.a), B = get(CMP.b);
     if (!A || !B) { body.append(h('div', { class: 'note err' }, 'One of these scenarios has problems that stop it running, so it cannot be compared.')); return; }
+    const un = [['A', A], ['B', B]].filter(x => !x[1].optimised).map(x => x[0]);
+    if (un.length) body.append(h('div', { class: 'note warn' }, (un.length === 2 ? 'Neither scenario has been optimised' : 'Scenario ' + un[0] + ' has not been optimised') + ': ' + (un.length === 2 ? 'both use' : 'it uses') + ' simple dispatch, which is greedy and not always the best the job can do. A difference between them may come from the dispatch rather than from the inputs. Optimise ' + (un.length === 2 ? 'both' : 'it') + ' for a fair comparison.'));
     const d = (a, b, dp, unit, goodDown) => { const x = b - a; if (Math.abs(x) < (dp ? 0.05 : 0.5)) return ['no change', '']; return [(x > 0 ? '+' : '−') + (dp ? Math.abs(x).toFixed(dp) : fmt(Math.abs(x))) + (unit || ''), (x < 0) === goodDown ? 'good' : 'bad']; };
     const rows = [
       ['Setup', A.setup, B.setup, ['', '']], ['Dispatch', A.plan, B.plan, ['', '']],
@@ -1457,7 +1520,7 @@
   const csvq = v => { v = String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   const csvRow = a => a.map(csvq).join(',') + '\r\n';
   const slug = () => (scn.name || 'scenario').replace(/[^a-z0-9]+/gi, '_').slice(0, 40);
-  function csvHeader(title) { return csvRow(['# ' + title]) + csvRow(['# Scenario: ' + scn.name]) + csvRow(['# ' + MOD.badgeText(scn)]) + csvRow(['# ' + (planText() || 'Dispatch: nearest available destination (no optimised plan)')]) + csvRow([]); }
+  function csvHeader(title) { return csvRow(['# ' + title]) + csvRow(['# Scenario: ' + scn.name]) + csvRow(['# ' + MOD.badgeText(scn)]) + csvRow(['# ' + planText()]) + (M.rateNoteText(scn) ? csvRow(['# Results are ' + M.rateNoteText(scn) + ': placeholders, not site rates']) : '') + csvRow([]); }
   function exportResults() {
     if (!res) return; const P = res.P, s = res.summary;
     let out = '﻿' + csvHeader('Earthmove results');

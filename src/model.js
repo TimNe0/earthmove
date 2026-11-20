@@ -391,12 +391,13 @@
   // E4: section start and finish dates as CSV, for import into P6 or MS Project (map the columns on import: Activity ID / ID, Activity Name / Name, Original Duration / Duration).
   function programmeCSV(scn, res) {
     const e4 = (scn.modules || {}).E4 || {}, style = e4.dateFormat === 'iso' ? 'iso' : 'uk', prefix = String(e4.idPrefix || 'EW');
-    const D = Engine.chartData(res), P = res.P, rows = [['Activity ID', 'Activity Name', 'Original Duration (days)', 'Start', 'Finish', 'Percent Complete', 'Type', 'Quantity (t)']];
+    const D = Engine.chartData(res), P = res.P, rows = [['Activity ID', 'Activity Name', 'Original Duration (days)', 'Start', 'Finish', 'Percent Complete', 'Type', 'Quantity (t)']], dflt = rateNoteText(scn, ['weather']); // dates depend on the weather rates: flag them in a last column (a comment line would break a P6 import)
+    if (dflt) rows[0].push('Note');
     D.sections.forEach((sec, i) => {
       if (sec.type === 'none') return;
       const r = res.sections[i], d0 = sec.start === null ? null : Math.floor(sec.start / Engine.DAY), d1 = sec.start === null ? null : Math.floor(sec.end / Engine.DAY);
       const pct = !sec.reached ? Math.max(0, Math.min(99, Math.round((1 - r.remaining / Math.abs(r.qty)) * 100))) : 100;
-      rows.push([prefix + String(i + 1).padStart(3, '0'), P.names[i], d0 === null ? '' : d1 - d0 + 1, d0 === null ? '' : fmtDate(P.startDay + d0, style), sec.reached ? fmtDate(P.startDay + d1, style) : '', d0 === null ? 0 : pct, sec.type === 'cut' ? 'Cut' : 'Fill', Math.round(Math.abs(r.qty))]);
+      rows.push([prefix + String(i + 1).padStart(3, '0'), P.names[i], d0 === null ? '' : d1 - d0 + 1, d0 === null ? '' : fmtDate(P.startDay + d0, style), sec.reached ? fmtDate(P.startDay + d1, style) : '', d0 === null ? 0 : pct, sec.type === 'cut' ? 'Cut' : 'Fill', Math.round(Math.abs(r.qty))].concat(dflt ? [dflt.charAt(0).toUpperCase() + dflt.slice(1)] : []));
     });
     return rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
   }
@@ -511,6 +512,32 @@
     const fr = Engine.simulate(fc), fcStart = Engine.parseISO(fc.settings.startDate), forecastEndDay = fcStart + Math.floor(fr.summary.endTime / Engine.DAY);
     return { asOf: last.date, actual: A, planned: last.plannedCum, variance: A - last.plannedCum, finished: false, plannedEnd, plannedEndDay, forecastEnd: Engine.fmtDay(forecastEndDay), forecastEndDay, lagDays: forecastEndDay - plannedEndDay, forecast: fr };
   }
+
+  // ---------- placeholder rates ----------
+  // Every cost, fuel-burn and weather value that ships with a guess in it. A value is a placeholder while it still equals its shipped
+  // default and has not been confirmed (typing in it, or "confirm", records scn.confirmedRates[id]; kept at the top level so a plan never goes stale).
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const RATE_FIELDS = [
+    ['E1', 'lorryRate', 'Lorry hire', '£ per hour', 'cost'], ['E1', 'excavatorRate', 'Excavator hire', '£ per hour', 'cost'], ['E1', 'receivingRate', 'Receiving plant hire', '£ per hour', 'cost'],
+    ['E1', 'fuelPrice', 'Fuel price', '£ per litre', 'cost'], ['E1', 'labourRate', 'Labour', '£ per plant-hour', 'cost'],
+    ['E2', 'lorryLPerHour', 'Lorry fuel burn', 'litres per hour', 'fuel'], ['E2', 'excavatorLPerHour', 'Excavator fuel burn', 'litres per hour', 'fuel'], ['E2', 'receivingLPerHour', 'Receiving plant fuel burn', 'litres per hour', 'fuel']
+  ].map(([mod, key, label, unit, group]) => ({ id: mod + '.' + key, mod, key, idx: null, label, unit, group, cell: 'mod:' + mod + ':' + key }))
+    .concat(MONTHS.map((m, k) => ({ id: 'D1.lostDays.' + k, mod: 'D1', key: 'lostDays', idx: k, label: 'Weather: days lost in ' + m, unit: 'days', group: 'weather', cell: 'mod:D1:lost' + k })),
+      [{ id: 'D2.breakdownPct', mod: 'D2', key: 'breakdownPct', idx: null, label: 'Breakdowns: chance a loading point is down on a day', unit: '% a day', group: 'weather', cell: 'mod:D2:breakdownPct' }]);
+  const RATE_GROUPS = { cost: 'cost rates', fuel: 'fuel burn', weather: 'weather and breakdowns' };
+  // the fuel burn rates also drive cost when only E1 is on (decision 23), so they are listed when either module is on
+  const rateApplies = (scn, f) => { const m = (scn.setup && scn.setup.modules) || {}; return f.mod === 'E2' ? !!(m.E1 || m.E2) : !!m[f.mod]; };
+  const rateGet = (scn, f) => { const b = (scn.modules || {})[f.mod] || {}; return f.idx === null ? b[f.key] : (b[f.key] || [])[f.idx]; };
+  const rateDefault = f => { const b = moduleDefaults({})[f.mod]; return f.idx === null ? b[f.key] : b[f.key][f.idx]; };
+  function rateSet(scn, f, v) { const b = scn.modules[f.mod]; if (f.idx === null) b[f.key] = v; else b[f.key][f.idx] = v; }
+  const rateIsDefault = (scn, f) => !(scn.confirmedRates && scn.confirmedRates[f.id]) && +rateGet(scn, f) === +rateDefault(f);
+  const rateFieldsOn = scn => RATE_FIELDS.filter(f => rateApplies(scn, f));
+  const defaultRates = scn => rateFieldsOn(scn).filter(f => rateIsDefault(scn, f));
+  function confirmRate(scn, id) { (scn.confirmedRates = scn.confirmedRates || {})[id] = true; }
+  function confirmRates(scn) { defaultRates(scn).forEach(f => confirmRate(scn, f.id)); }
+  // "cost rates, fuel burn" ... for the groups still holding a default
+  const defaultRateGroups = (scn, only) => { const g = []; defaultRates(scn).forEach(f => { if ((!only || only.indexOf(f.group) >= 0) && g.indexOf(RATE_GROUPS[f.group]) < 0) g.push(RATE_GROUPS[f.group]); }); return g; };
+  const rateNoteText = (scn, only) => { const g = defaultRateGroups(scn, only); return g.length ? 'using default rates (' + g.join(', ') + ')' : ''; };
 
   // ---------- examples ----------
   function mk(name, lengthM, qty, extra) {
@@ -628,5 +655,5 @@
   }
   const EXAMPLES = { simple: exampleSimple, modules: exampleModules, materials: exampleMaterials, site: exampleSite, risk: exampleRisk, commercial: exampleCommercial, stockpile: exampleStockpile };
 
-  return { programmeCSV, sectionsCSV, parseSections, applyImport, actualsAnalysis, plannedCumulative, reforecast, VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, exampleSimple, exampleModules, exampleMaterials, exampleSite, exampleRisk, exampleCommercial, exampleStockpile };
+  return { programmeCSV, sectionsCSV, parseSections, applyImport, actualsAnalysis, plannedCumulative, reforecast, VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, RATE_FIELDS, RATE_GROUPS, rateGet, rateSet, rateDefault, rateIsDefault, rateFieldsOn, defaultRates, defaultRateGroups, rateNoteText, confirmRate, confirmRates, exampleSimple, exampleModules, exampleMaterials, exampleSite, exampleRisk, exampleCommercial, exampleStockpile };
 });

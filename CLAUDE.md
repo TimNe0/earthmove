@@ -4,7 +4,9 @@ An offline earth-movement simulator and optimiser for a linear road (cut to fill
 
 ## Status
 
-**All 29 modules in all 7 phases are built** (A1-A5, B1-B6, C1-C5, D1-D5, E1-E8). Last full run: `tests/run.js` 534 checks pass, `tests/diff.js` 181 scenarios 0 differences. `master` = tag `phases567-done`.
+**All 29 modules in all 7 phases are built** (A1-A5, B1-B6, C1-C5, D1-D5, E1-E8). Last full run: `tests/run.js` 568 checks pass, `tests/diff.js` 181 scenarios 0 differences. `master` = tag `phases567-done`.
+
+Follow-ups on branch `followups` (not yet merged): optimiser monotone fix with voluntary holds, Stockpile demo, placeholder-rate flags (decisions 29-34).
 
 Known limits and open items are in `MORNING_REPORT.md`; every design decision with its reasoning is in `DECISIONS.md` (read it before changing behaviour). Highlights: stockpile planning in the optimiser is built but not shown to help; greedy dispatch is not monotone (a constraint can occasionally improve a result); D2 breakdowns are per loading point.
 
@@ -13,7 +15,7 @@ Known limits and open items are in `MORNING_REPORT.md`; every design decision wi
 - `src/engine.js` the simulation: `prepare` (flat arrays, calendar, constraints), `buildCfg`, `simulate`, results helpers (`chartData`, `costCarbon`, `lateness`, `massHaul`, ...).
 - `src/model.js` scenario defaults, `normalise`, validation (`moduleIssues`, plain-English with a cell link), examples, E4/E5/E6 pure functions.
 - `src/optimiser.js` annealing over flows; `src/risk.js` D2 runs; `src/worker.js` glue for both; `src/modules.js` the registry; `src/ui.js`, `src/index.html`, `src/style.css`.
-- `tests/run.js` hand-checked tests (numbered, each with the hand calculation in a comment); `tests/diff.js` differential test; `tests/perf.js` speed; `tests/browser/*.js` Chrome scripts.
+- `tests/run.js` hand-checked tests (numbered, each with the hand calculation in a comment); `tests/diff.js` differential test; `tests/perf.js` speed; `tests/monotone.js` (about 40 s; optimised finish with a constraint removed must be no worse; `SEED=n` varies the search); `tests/browser/*.js` Chrome scripts.
 - `.baseline/` the pre-Phase-4 engine (made with `git archive pre-step2 src | tar -x -C .baseline/`). **Never regenerate or edit it.** `releases/` is an old page backup. Both are gitignored.
 
 ## How to run things (no Node on the host)
@@ -21,6 +23,7 @@ Known limits and open items are in `MORNING_REPORT.md`; every design decision wi
 - Tests: `docker run --rm --entrypoint node -v /home/timneo/earthmove:/w -w /w docker.n8n.io/n8nio/n8n:2.48.5 tests/run.js` (expect `ALL PASSED`, snapshot hash `b3d068476047`). Same command with `tests/diff.js` (expect 0 differ) and `tests/perf.js .baseline/src` vs `tests/perf.js src`.
 - Speed: judge by the minimum of several alternating runs; this machine swings about 2x run to run. Gate: plain jobs no more than 10% over baseline.
 - Browser: scripts run inside `zenika/alpine-chrome:with-node` (Chrome on 9222, the `ws` module). Build into a scratch copy and serve it on port 8091; **never overwrite `dist/` mid-work**. Stop only your own server, by its pid. Keep each command under the 120 s limit (run scripts in batches of two or three).
+- The Chrome image has no `ws`: `npm i ws` once into a scratch folder and mount it with `-e NODE_PATH=/nm/node_modules`; run Chrome with `--network host` so it can reach the scratch server on the host.
 - Git has no identity configured: `git -c user.name="Claude Code" -c user.email=noreply@anthropic.com commit ...`. Tags mark every green step.
 
 ## Rules that matter
