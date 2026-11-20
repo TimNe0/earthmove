@@ -83,6 +83,7 @@
     let maxFlow = Math.min(sum(supply), sum(need)), mc0 = null;
     if (M && ns && nd) { mc0 = minCostFlow(supply, need, cost); maxFlow = mc0.total; }     // the most that classes and imports allow to be placed
     const before = Engine.simulate(scn, { P });           // what the user sees now (active plan or greedy dispatch)
+    { const bp = before.msum ? before.msum.placedT : before.summary.tonnesMoved; if (bp > maxFlow) maxFlow = bp; } // never accept placing less soil than the dispatch it replaces, even above the flow estimate
     const beforeScore = scoreOf(goal, scoreSummary(before, scn), maxFlow);
     const job = { done: false, iter: 0, evals: 0, result: null };
     if (!ns || !nd) { job.done = true; job.result = { improved: false, goal, reason: 'There is nothing to optimise: a plan needs at least one cut and one fill section.', before: pack(before), after: pack(before), plan: null, iterations: 0 }; job.step = () => job; job.progress = () => ({ iter: 0, frac: 1 }); return job; }
@@ -94,12 +95,12 @@
       for (const v of st.via || []) { viaSK[v.s + ':' + v.k] = (viaSK[v.s + ':' + v.k] || 0) + v.t; viaKD[v.k + ':' + v.d] = (viaKD[v.k + ':' + v.d] || 0) + v.t; viaS[v.s] = true; }
       for (let s = 0; s < ns; s++) {
         let any = !!viaS[s];
-        for (const d of st.order[s]) { const f = st.F[s * nd + d]; if (f > 1e-6) { arcs.push({ from: ids[srcs[s]], to: ids[dsts[d]], tonnes: Math.round(f * 1000) / 1000 }); any = true; } }
+        for (const d of st.order[s]) { const f = st.F[s * nd + d]; if (f > 1e-6) { arcs.push({ from: ids[srcs[s]], to: ids[dsts[d]], tonnes: Math.ceil(f * 1000 - 1e-9) / 1000 }); any = true; } }
         if (!any) arcs.push({ from: ids[srcs[s]], to: ids[dsts[st.order[s][0]]], tonnes: 0 });
         rank[ids[srcs[s]]] = st.rank[s];
       }
-      for (const key in viaSK) { const [s, k] = key.split(':').map(Number); arcs.push({ from: ids[srcs[s]], to: ids[stocks[k]], tonnes: Math.round(viaSK[key] * 1000) / 1000 }); }   // deliberate deposit ...
-      for (const key in viaKD) { const [k, d] = key.split(':').map(Number); arcs.push({ from: ids[stocks[k]], to: ids[dsts[d]], tonnes: Math.round(viaKD[key] * 1000) / 1000 }); }   // ... and the haul out again
+      for (const key in viaSK) { const [s, k] = key.split(':').map(Number); arcs.push({ from: ids[srcs[s]], to: ids[stocks[k]], tonnes: Math.ceil(viaSK[key] * 1000 - 1e-9) / 1000 }); }   // deliberate deposit ...
+      for (const key in viaKD) { const [k, d] = key.split(':').map(Number); arcs.push({ from: ids[stocks[k]], to: ids[dsts[d]], tonnes: Math.ceil(viaKD[key] * 1000 - 1e-9) / 1000 }); }   // ... and the haul out again
       return { arcs, rank };
     }
     function evaluate(st) {
@@ -109,14 +110,24 @@
     }
 
     // start point A: the flows the current dispatch produced, in the order each source first used them
+    const depIn = {}, depOut = {};
     const FA = new Float64Array(ns * nd), first = new Float64Array(ns * nd).fill(Infinity);
     const sIdx = {}, dIdx = {}; srcs.forEach((i, s) => (sIdx[i] = s)); dsts.forEach((j, d) => (dIdx[j] = d));
     for (let k = 0; k < before.n; k++) {
       const s = sIdx[before.log.src[k]], d = dIdx[before.log.dst[k]];
-      if (s === undefined || d === undefined) continue; // loads to an export gate or a stockpile are not section-to-section flows
+      if (s === undefined || d === undefined) { // loads to or from a stockpile are kept as stockpile routes below; export gates are not section-to-section flows
+        const kd = stocks.indexOf(before.log.dst[k]), ks = stocks.indexOf(before.log.src[k]);
+        if (s !== undefined && kd >= 0) (depIn[kd] = depIn[kd] || []).push({ s, t: before.log.t[k] });
+        else if (d !== undefined && ks >= 0) (depOut[ks] = depOut[ks] || []).push({ d, t: before.log.t[k] });
+        continue;
+      }
       FA[s * nd + d] += before.log.t[k]; if (before.log.start[k] < first[s * nd + d]) first[s * nd + d] = before.log.start[k];
     }
-    const stA = { F: FA, order: [], rank: Float64Array.from(srcs, (_, s) => s), via: [] };
+    // what the dispatcher put into each stockpile and took out again becomes a planned route cut -> pile -> fill (deposits nobody hauled out are left to the dispatcher)
+    const viaA = [];
+    stocks.forEach((_, k) => { const ins = (depIn[k] || []).map(x => ({ s: x.s, t: x.t })), outs = depOut[k] || []; let a = 0;
+      for (const o of outs) { let need = o.t; while (need > 1e-9 && a < ins.length) { const t = Math.min(need, ins[a].t), e = viaA.find(v => v.s === ins[a].s && v.d === o.d && v.k === k); if (e) e.t += t; else viaA.push({ s: ins[a].s, d: o.d, k, t }); ins[a].t -= t; need -= t; if (ins[a].t <= 1e-9) a++; } } });
+    const stA = { F: FA, order: [], rank: Float64Array.from(srcs, (_, s) => s), via: viaA };
     for (let s = 0; s < ns; s++) stA.order.push(byDist(s).sort((a, b) => first[s * nd + a] - first[s * nd + b]));
     // start point B: the exact lowest tonne-km flows, nearest first
     const mc = mc0 || minCostFlow(supply, need, cost);
@@ -203,8 +214,10 @@
     function finish(cancelled) {
       if (job.done) return;
       job.done = true;
-      const better = bestE.score < beforeScore - 1e-6;
-      const result = { improved: better, cancelled: !!cancelled, goal, iterations: job.iter, evals: job.evals, seconds: (Date.now() - t0) / 1000, before: pack(before), after: null, plan: null };
+      // a plan that routes soil through a stockpile and only ties with plain dispatch is still kept: it writes the stockpile route down instead of leaving it to the dispatcher's fallback
+      const tiesWithRoute = !(bestE.score < beforeScore - 1e-6) && Math.abs(bestE.score - beforeScore) <= 1e-6 && (best.via || []).length > 0;
+      const better = bestE.score < beforeScore - 1e-6 || tiesWithRoute;
+      const result = { improved: better, cancelled: !!cancelled, goal, iterations: job.iter, evals: job.evals, seconds: (Date.now() - t0) / 1000, before: pack(before), after: null, plan: null, matchesDispatch: tiesWithRoute };
       if (better) {
         const pl = makePlan(best);
         const plan = { goal, sig: Engine.sigOf(scn), active: true, arcs: pl.arcs, rank: pl.rank };

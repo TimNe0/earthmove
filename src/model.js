@@ -614,7 +614,19 @@
     o.modules.E6.actuals = [['2027-01-11', 3200], ['2027-01-12', 3800], ['2027-01-13', 3600], ['2027-01-14', 3900], ['2027-01-15', 3500]].map(([date, tonnes], k) => ({ id: 'act' + k, date, tonnes }));
     return normalise(o);
   }
-  const EXAMPLES = { simple: exampleSimple, modules: exampleModules, materials: exampleMaterials, site: exampleSite, risk: exampleRisk, commercial: exampleCommercial };
+  // Seventh example: a cut that closes before its only fill opens, with a stockpile between them (A5, C3). Small enough to check by hand.
+  function exampleStockpile() {
+    const o = defaults();
+    o.name = 'Stockpile demo: the cut closes on 13 Jan, the fill opens on 18 Jan';
+    o.setup.level = 'custom';
+    ['A5', 'C3'].forEach(id => (o.setup.modules[id] = true));
+    o.sections = [mk('Cut', 500, 400, { id: 'cut', maxLoaders: 2 }), mk('Gap', 1000, 0, { id: 'gap' }), mk('Fill', 500, -400, { id: 'fill', maxLoaders: 2, openFrom: '2027-01-18' })];
+    const n = normalise(o);
+    n.modules.C3.periods = [{ id: 'closes', sec: 'cut', from: '2027-01-13', to: '', note: 'Cut closes for good' }];
+    n.modules.A5.stockpiles = [{ id: 'pile', name: 'Pile', chainageM: 1000, capacityT: 1000, handleCostPerT: 2, lanes: 2 }];
+    return n;
+  }
+  const EXAMPLES = { simple: exampleSimple, modules: exampleModules, materials: exampleMaterials, site: exampleSite, risk: exampleRisk, commercial: exampleCommercial, stockpile: exampleStockpile };
 
-  return { programmeCSV, sectionsCSV, parseSections, applyImport, actualsAnalysis, plannedCumulative, reforecast, VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, exampleSimple, exampleModules, exampleMaterials, exampleSite, exampleRisk, exampleCommercial };
+  return { programmeCSV, sectionsCSV, parseSections, applyImport, actualsAnalysis, plannedCumulative, reforecast, VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, exampleSimple, exampleModules, exampleMaterials, exampleSite, exampleRisk, exampleCommercial, exampleStockpile };
 });

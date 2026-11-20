@@ -1538,6 +1538,25 @@ console.log('\n59. OPTIMISER STOCKPILE PLANNING: plan arcs to and from a stockpi
   if (oe.plan) { const pe = Model.exampleMaterials(); pe.plan = oe.plan; audit('Materials example with an optimised plan (stockpile planning)', pe); }
 }
 
+console.log('\n60. STOCKPILE DEMO: the cut closes before its only fill opens; the optimiser plans cut -> pile -> fill');
+{
+  // hand: Cut 400 t, 20 t loads = 20 loads, 2 loaders, 10 min a load: a pair loads every 10 min, the 10th pair starts 08:30.
+  // Cut mid 250 m to Pile 1000 m = 750 m at 5 km/h = 9 min, so a load leaving at :10 tips at :19; last deposit tips 08:49 Monday 11 Jan.
+  // The fill opens Monday 18 Jan (day 7): the same pattern runs pile -> fill, last tip 08:49 on day 7 = 7 x 1440 + 529 = 10609 min.
+  // Handling: 400 t out x 2 = 800. Without the pile nothing can be tipped before the cut closes (13 Jan), so nothing moves.
+  const near = (a, b) => Math.abs(a - b) < 1e-6, sc = Model.exampleStockpile(), r = audit('stockpile demo', sc), tipAt = k => hhmm(r.log.tip[k]);
+  ok(r.n === 40 && tipAt(19) === '08:49' && tipAt(39) === '08:49' && r.summary.endTime === 10609, 'hand: 20 loads in and 20 out, last tips 08:49 on 11 and 18 Jan, ends at minute 10609 (' + r.summary.endTime + ')');
+  ok(near(r.msum.stockInT, 400) && near(r.msum.stockOutT, 400) && near(r.msum.handleCost, 800) && r.summary.unfilled === 0, 'hand: 400 t in, 400 t out, 800 handling, fill completely filled');
+  const none = Model.exampleStockpile(); none.modules.A5.stockpiles = []; const nr = Engine.simulate(none);
+  ok(nr.summary.tonnesMoved === 0 && nr.summary.unfilled === 400, 'direction: with no stockpile nothing moves and 400 t of fill is never placed');
+  const o = runOpt(sc, 'completion', 1e9, { maxIter: 60 }), pl = o.plan && o.plan.arcs;
+  ok(o.improved && o.matchesDispatch, 'the optimiser keeps a plan, and says it matches plain dispatch');
+  ok(pl && pl.some(a => a.from === 'cut' && a.to === 'K:pile' && near(a.tonnes, 400)) && pl.some(a => a.from === 'K:pile' && a.to === 'fill' && near(a.tonnes, 400)), 'the plan contains cut -> pile 400 t and pile -> fill 400 t');
+  const ps = Model.exampleStockpile(); ps.plan = o.plan; const pr = audit('stockpile demo with its optimised plan', ps);
+  ok(pr.summary.unfilled === 0 && pr.summary.endTime === 10609 && pr.summary.endTime < Infinity && nr.summary.unfilled > pr.summary.unfilled, 'the planned route fills the fill and finishes where the dispatcher does; the no-stockpile job cannot');
+  ok(Optim.scoreOf('completion', pr.summary, 400) < Optim.scoreOf('completion', nr.summary, 400), 'the planned route scores better than the no-stockpile result');
+}
+
 console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JSON)');
 {
   const a = Model.exampleSimple(); a.setup.level = 'custom'; a.modules.B1 = { site: { fleet: 12 }, mode: 'site' };
