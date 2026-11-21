@@ -17,6 +17,7 @@ Earthmove is one of the browser-based planning tools from [Intelligent Planning]
 - **Adds detail when you need it.** 29 optional modules cover soil types and bulking, fleets and vehicle types, site constraints, calendars, weather, cost, carbon and reporting. Start simple and switch on only what your job needs.
 - **Finds a better plan.** The optimiser searches for a haul plan with an earlier finish, better use of the daily limit, less haulage, or lower cost or carbon, and shows the before and after side by side.
 - **Tests the risk.** Run the job hundreds of times with random weather and breakdowns to get 50% and 80% confidence finish dates.
+- **Teaches itself.** A **Tutorials** button opens step-by-step tours that spotlight one control at a time and ask you to try it: a five minute Quick start, asking a what-if question, optimising, going further, and a short tour of each of the 29 modules. They run on their own example, so your own scenario is never touched.
 - **Exports the answers.** Results, the movement log and daily totals as CSV, a programme CSV you can import into Primavera P6 or Microsoft Project, a time-chainage chart image and a printable one-page report.
 
 | | |
