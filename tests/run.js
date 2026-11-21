@@ -1623,5 +1623,32 @@ console.log('\n11. SAVE / LOAD ROUND TRIP (level + modules + sections survive JS
   ok(Model.normalise(old).setup.level === 'simple', 'older file without setup loads as Simple');
 }
 
+console.log('\n63. CSV EXPORTS ARE SAFE TO OPEN IN A SPREADSHEET (formula guard) AND STILL ROUND-TRIP');
+{
+  // Hand: a text cell starting with = + - @ TAB or CR gets a leading ' (OWASP), then RFC 4180 quoting. Numbers, including negatives, are untouched.
+  const c = Model.csvCell;
+  ok(c('=1+1') === "'=1+1" && c('+44 20') === "'+44 20" && c('-North') === "'-North" && c('@SUM(A1)') === "'@SUM(A1)", '= + - @ at the start get a guard quote');
+  ok(c('\tx') === '"\'\tx"' && c('\rx') === '"\'\rx"', 'a leading TAB or CR gets the guard quote, then quoting');
+  ok(c('=HYPERLINK("http://x","y")') === '"\'=HYPERLINK(""http://x"",""y"")"', 'the guard quote sits inside the quoted field and quotes are doubled');
+  ok(c(-12000) === '-12000' && c(0) === '0' && c(2.5) === '2.5', 'numbers are written as numbers, negative fill quantities included');
+  ok(c('Cut A') === 'Cut A' && c('a,b') === '"a,b"' && c('a;b') === '"a;b"' && c(null) === '' && c(undefined) === '', 'ordinary text, commas, semicolons and empty cells as before');
+  // a hostile name exports guarded and comes back exactly as it was
+  const ex = Model.exampleSimple(); ex.sections[0].name = '=cmd|calc'; ex.sections[1].name = '-North cutting';
+  const csv = Model.sectionsCSV(ex);
+  ok(csv.indexOf("'=cmd|calc") >= 0 && csv.indexOf('\n=cmd') < 0, 'the section table export guards the hostile name');
+  const p = Model.parseSections(csv, ex);
+  ok(p.errors.length === 0 && p.sections[0].name === '=cmd|calc' && p.sections[1].name === '-North cutting' && Model.secQty(p.sections[3]) === Model.secQty(ex.sections[3]), 'importing our own export removes the guard quote; quantities are unchanged');
+}
+
+console.log('\n64. A LOADED SCENARIO CAN ONLY CARRY #rgb / #rrggbb MATERIAL COLOURS');
+{
+  const a = Model.exampleMaterials();
+  a.materials[0].colour = 'red;background:url(x)'; a.materials[1].colour = '#5B8A3C'; a.materials[2].colour = '#abc'; a.materials[3].colour = 42;
+  const b = Model.normalise(JSON.parse(JSON.stringify(a)));
+  ok(/^#[0-9a-f]{6}$/i.test(b.materials[0].colour) && b.materials[0].colour !== a.materials[0].colour, 'a colour that is not a hex code is replaced by the default');
+  ok(b.materials[1].colour === '#5B8A3C' && b.materials[2].colour === '#abc', 'valid #rrggbb and #rgb colours are kept');
+  ok(/^#[0-9a-f]{6}$/i.test(b.materials[3].colour), 'a non-string colour is replaced');
+}
+
 console.log(fails ? '\n' + fails + ' FAILED' : '\nALL PASSED');
 process.exit(fails ? 1 : 0);

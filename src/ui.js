@@ -4,6 +4,10 @@
   const E = Engine, M = Model, MOD = Modules;
   const $ = id => document.getElementById(id);
   const STORE = 'earthmove.scenario.v1';
+  // Background worker. The single-file build carries the worker source inline (#worker-src) and starts it from a Blob. A multi-file
+  // deployment (for example under a Content-Security-Policy with no inline script) loads worker.js from beside this file instead.
+  const WORKER_URL = document.currentScript && document.currentScript.src ? new URL('worker.js', document.currentScript.src).href : 'worker.js';
+  function makeWorker() { const s = $('worker-src'); return s ? new Worker(URL.createObjectURL(new Blob([s.textContent], { type: 'text/javascript' }))) : new Worker(WORKER_URL); }
   MOD.setBuilt(['A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'C1', 'C2', 'C3', 'C4', 'C5', 'D1', 'D2', 'D3', 'D4', 'D5', 'E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7', 'E8']); // modules built so far
   const modOn = id => !!(MOD.byId[id] && MOD.byId[id].built && scn.setup.modules[id]);
   const anySite = () => ['C1', 'C2', 'C3', 'C4', 'C5', 'D4'].some(modOn); // site constraints and calendar (the D3 target dates live in the Sections table)
@@ -1054,7 +1058,7 @@
     RISK.state = 'running'; RISK.frac = 0; RISK.error = ''; RISK.cancelFlag = false;
     const sc = JSON.parse(JSON.stringify(scn)); sc.saved = []; const b = $('riskrun'); if (b) b.disabled = true;
     let w = null;
-    try { w = new Worker(URL.createObjectURL(new Blob([$('worker-src').textContent], { type: 'text/javascript' }))); } catch (e) { w = null; }
+    try { w = makeWorker(); } catch (e) { w = null; }
     const onPage = () => { // no worker available: run in small slices on the page so it stays responsive
       if (RISK.worker) { try { RISK.worker.terminate(); } catch (e) { } RISK.worker = null; }
       let job; try { job = Risk.create(sc); } catch (e) { RISK.error = String(e.message || e); RISK.state = 'idle'; renderRiskResult(); if (b) b.disabled = false; return; }
@@ -1413,7 +1417,7 @@
     const sc = JSON.parse(JSON.stringify(scn)); sc.saved = [];
     const msg = { cmd: 'start', scn: sc, goal: OPT.goal, budgetMs: EFFORT[OPT.effort][1], seed: 20270111 };
     let w = null;
-    try { w = new Worker(URL.createObjectURL(new Blob([$('worker-src').textContent], { type: 'text/javascript' }))); } catch (e) { w = null; }
+    try { w = makeWorker(); } catch (e) { w = null; }
     const fallback = () => { if (OPT.worker) { try { OPT.worker.terminate(); } catch (e) { } OPT.worker = null; } runOnPage(sc, msg); };
     if (w) {
       OPT.worker = w; OPT.usingWorker = true;
@@ -1517,8 +1521,7 @@
   function download(name, text, type) {
     const a = h('a', { href: URL.createObjectURL(new Blob([text], { type })), download: name }); document.body.append(a); a.click(); a.remove();
   }
-  const csvq = v => { v = String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-  const csvRow = a => a.map(csvq).join(',') + '\r\n';
+  const csvRow = a => a.map(M.csvCell).join(',') + '\r\n';
   const slug = () => (scn.name || 'scenario').replace(/[^a-z0-9]+/gi, '_').slice(0, 40);
   function csvHeader(title) { return csvRow(['# ' + title]) + csvRow(['# Scenario: ' + scn.name]) + csvRow(['# ' + MOD.badgeText(scn)]) + csvRow(['# ' + planText()]) + (M.rateNoteText(scn) ? csvRow(['# Results are ' + M.rateNoteText(scn) + ': placeholders, not site rates']) : '') + csvRow([]); }
   function exportResults() {

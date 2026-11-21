@@ -5,6 +5,7 @@
 })(typeof self !== 'undefined' ? self : this, function (Engine, Modules) {
   'use strict';
   const VERSION = 1;
+  const HEX_COLOUR = /^#[0-9a-f]{3}([0-9a-f]{3})?$/i; // the only colours a loaded scenario may carry
 
   // A material is also a placement class (A2). Density is t per m3, bulking is loose/bank volume, compaction is compacted/bank volume.
   function defaultMaterial(st, id) {
@@ -101,6 +102,7 @@
     // materials: every line's material must exist, ids are unique, and a class always accepts itself (A2)
     const seen = {};
     o.materials = (Array.isArray(o.materials) && o.materials.length ? o.materials : d.materials).map(m => Object.assign(defaultMaterial(o.settings, m && m.id), m))
+      .map(m => (HEX_COLOUR.test(m.colour) ? m : Object.assign(m, { colour: defaultMaterial(o.settings, m.id).colour }))) // a loaded file is untrusted and colours go into canvas and style strings
       .filter(m => (seen[m.id] ? false : (seen[m.id] = true)));
     o.sections.forEach(s => s.lines.forEach(l => {
       if (!l.material) l.material = 'general';
@@ -383,7 +385,16 @@
   }
 
   // ---------- E4 programme export, E5 section import, E6 planned versus actual ----------
-  const csvCell = v => { v = v === null || v === undefined ? '' : String(v); return /[",\n\r;\t]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  // The one CSV cell writer for every export (the page uses it too, as Model.csvCell). Names from a loaded scenario or an imported sheet are
+  // untrusted, so a cell that starts with = + - @ TAB or CR gets a leading ' (the OWASP formula-injection guard); otherwise a spreadsheet
+  // could run it as a formula. Numbers are written as they are, so a negative fill quantity stays a number. Then quote per RFC 4180;
+  // ; and TAB are quoted too, for spreadsheets that use them as the delimiter. The guard matches csvCell in Intelligent Planning's tools/shared/csv.js.
+  const csvCell = v => {
+    if (typeof v === 'number' && isFinite(v)) return String(v);
+    v = v === null || v === undefined ? '' : String(v);
+    if (/^[=+\-@\t\r]/.test(v)) v = "'" + v;
+    return /[",\n\r;\t]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  };
   const fmtDate = (dn, style) => { if (dn === null || dn === undefined) return ''; const iso = Engine.dayToISO(dn); return style === 'iso' ? iso : iso.slice(8, 10) + '/' + iso.slice(5, 7) + '/' + iso.slice(0, 4); };
   const DOWS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
   const daysText = wd => { const a = (wd || []).map(Boolean); if (a.join() === 'true,true,true,true,true,false,false') return 'Mon-Fri'; if (a.join() === 'true,true,true,true,true,true,false') return 'Mon-Sat'; if (a.every(Boolean)) return 'Mon-Sun'; return a.map((x, i) => (x ? DOWS[i][0].toUpperCase() + DOWS[i].slice(1) : '')).filter(Boolean).join(' '); };
@@ -450,7 +461,7 @@
     } else if (idx.lengthM === undefined || idx.qty === undefined) {
       out.errors.push({ row: 1, text: 'The first row must name at least the length and the soil quantity columns. Use the template (Download template) to see the layout.' }); return out;
     }
-    const get = (r, k) => (idx[k] === undefined || r[idx[k]] === undefined ? '' : String(r[idx[k]]).trim());
+    const get = (r, k) => (idx[k] === undefined || r[idx[k]] === undefined ? '' : String(r[idx[k]]).trim().replace(/^'(?=[=+\-@\t\r])/, '')); // drop the formula guard quote our own export adds
     for (let ri = dataStart; ri < rows.length; ri++) {
       const r = rows[ri], rn = ri + 1; out.rows++;
       const sec = newSection(out.sections.length), errs = out.errors.length, nm = get(r, 'name');
@@ -655,5 +666,5 @@
   }
   const EXAMPLES = { simple: exampleSimple, modules: exampleModules, materials: exampleMaterials, site: exampleSite, risk: exampleRisk, commercial: exampleCommercial, stockpile: exampleStockpile };
 
-  return { programmeCSV, sectionsCSV, parseSections, applyImport, actualsAnalysis, plannedCumulative, reforecast, VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, RATE_FIELDS, RATE_GROUPS, rateGet, rateSet, rateDefault, rateIsDefault, rateFieldsOn, defaultRates, defaultRateGroups, rateNoteText, confirmRate, confirmRates, exampleSimple, exampleModules, exampleMaterials, exampleSite, exampleRisk, exampleCommercial, exampleStockpile };
+  return { csvCell, programmeCSV, sectionsCSV, parseSections, applyImport, actualsAnalysis, plannedCumulative, reforecast, VERSION, MOD_IDS, defaultMaterial, moduleDefaults, machinesFromLoaders, moduleIssues, setUnits, defaults, newSection, newId, normalise, validate, secQty, setQty, EXAMPLES, RATE_FIELDS, RATE_GROUPS, rateGet, rateSet, rateDefault, rateIsDefault, rateFieldsOn, defaultRates, defaultRateGroups, rateNoteText, confirmRate, confirmRates, exampleSimple, exampleModules, exampleMaterials, exampleSite, exampleRisk, exampleCommercial, exampleStockpile };
 });

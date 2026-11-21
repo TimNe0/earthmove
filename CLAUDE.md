@@ -4,7 +4,7 @@ An offline earth-movement simulator and optimiser for a linear road (cut to fill
 
 ## Status
 
-**All 29 modules in all 7 phases are built** (A1-A5, B1-B6, C1-C5, D1-D5, E1-E8). Last full run: `tests/run.js` 568 checks pass, `tests/diff.js` 181 scenarios 0 differences. `master` = tag `phases567-done`.
+**All 29 modules in all 7 phases are built** (A1-A5, B1-B6, C1-C5, D1-D5, E1-E8). Last full run: `tests/run.js` 578 checks pass, `tests/diff.js` 181 scenarios 0 differences. `master` = tag `phases567-done`.
 
 Follow-ups on branch `followups` (not yet merged): optimiser monotone fix with voluntary holds, Stockpile demo, placeholder-rate flags (decisions 29-34).
 
@@ -12,6 +12,7 @@ Known limits and open items are in `MORNING_REPORT.md`; every design decision wi
 
 ## Layout
 
+- The page also runs as separate files (no inline script) on the Intelligent Planning website; see decision 35 before changing `worker.js`, `makeWorker` or `csvCell`.
 - `src/engine.js` the simulation: `prepare` (flat arrays, calendar, constraints), `buildCfg`, `simulate`, results helpers (`chartData`, `costCarbon`, `lateness`, `massHaul`, ...).
 - `src/model.js` scenario defaults, `normalise`, validation (`moduleIssues`, plain-English with a cell link), examples, E4/E5/E6 pure functions.
 - `src/optimiser.js` annealing over flows; `src/risk.js` D2 runs; `src/worker.js` glue for both; `src/modules.js` the registry; `src/ui.js`, `src/index.html`, `src/style.css`.

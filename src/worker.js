@@ -1,6 +1,8 @@
-/* Worker glue. Built after engine.js and optimiser.js in one Blob, so it needs no files. */
+/* Worker glue. In the single-file build it comes after engine.js, optimiser.js and risk.js in one Blob, so it needs no files.
+   Loaded as a file of its own (a multi-file deployment) it loads them from beside itself. */
 (function () {
   'use strict';
+  if (typeof Engine === 'undefined') importScripts('engine.js', 'optimiser.js', 'risk.js');
   let job = null, cancelled = false;
   function loop() {
     if (!job) return;
