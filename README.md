@@ -61,6 +61,10 @@ Open `dist/earthmove.html` straight from disk in any modern browser (Chrome, Edg
 
 The page can also be served as separate files under a strict Content-Security-Policy with no inline script, which is how the Intelligent Planning website hosts it (see decision 35).
 
+## Licence
+
+Earthmove is open source under the [MIT licence](LICENSE): you are free to use, change and share it, including commercially. It comes with no warranty, so check its results before relying on them.
+
 ## About
 
 Earthmove is developed by [Intelligent Planning Ltd](https://www.intelligent-planning.com/), an independent UK planning and project controls consultancy. See our other [browser-based planning tools](https://www.intelligent-planning.com/tools/), or [get in touch](https://www.intelligent-planning.com/contact.php) with questions or ideas.
