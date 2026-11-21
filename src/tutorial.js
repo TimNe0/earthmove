@@ -109,7 +109,7 @@
 
     function renderCard() {
       const A = active, s = A.step, n = A.tut.steps.length, card = A.ov.card;
-      card.replaceChildren(
+      card.replaceChildren(...[ // native replaceChildren prints null as text, so the empty slot is dropped
         h('div', { class: 'tut-meta' }, h('span', {}, 'Step ' + (A.idx + 1) + ' of ' + n), h('span', {}, A.tut.title)),
         h('div', { class: 'tut-bar' }, h('i', { style: 'width:' + Math.round((A.idx + 1) / n * 100) + '%' })),
         h('h3', {}, s.title), h('p', {}, s.text),
@@ -117,7 +117,7 @@
         h('div', { class: 'tut-btns' },
           h('button', { class: 'tut-back', onclick: () => go(-1), disabled: A.idx === 0 }, 'Back'),
           h('button', { class: 'tut-next primary', onclick: () => next(true) }, A.idx === n - 1 ? 'Finish' : 'Next'),
-          h('button', { class: 'tut-exit', onclick: () => exit(false) }, 'Exit')));
+          h('button', { class: 'tut-exit', onclick: () => exit(false) }, 'Exit'))].filter(Boolean));
     }
     function noteDone(text) { const o = active.ov.card.querySelector('.tut-ok'); if (o) { o.textContent = text; o.hidden = !text; } }
 

@@ -46,7 +46,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       await sleep(150);
       const card = document.querySelector('.tut-card'); const txt = card ? card.textContent : '';
       if (!card || !txt.includes(s.title)) out.problems.push('step ' + n + ': card missing or wrong');
-      if (/\\bnull\\b|undefined|NaN/.test(txt)) out.problems.push('step ' + n + ': stray null/undefined/NaN on the card');
+      if (/null|undefined|NaN/.test(txt)) out.problems.push('step ' + n + ': stray null/undefined/NaN on the card');
       if (a.pre) out.problems.push('step ' + n + ': already done on arrival');
       if (s.done) {
         for (const act of s.auto) if (!T.perform(act)) out.problems.push('step ' + n + ': auto action found nothing ' + JSON.stringify(act));
