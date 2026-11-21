@@ -14,7 +14,8 @@ def html_ascii(s): # non-ASCII -> numeric character references
     return ''.join(c if ord(c) < 128 else '&#%d;' % ord(c) for c in s)
 html = html_ascii(rd('index.html'))
 parts = {'CSS': rd('style.css'), 'ENGINE': rd('engine.js'), 'MODULES': rd('modules.js'),
-         'MODEL': rd('model.js'), 'OPTIM': rd('optimiser.js'), 'RISK': rd('risk.js'), 'WORKER': rd('worker.js'), 'UI': rd('ui.js')}
+         'MODEL': rd('model.js'), 'OPTIM': rd('optimiser.js'), 'RISK': rd('risk.js'), 'WORKER': rd('worker.js'), 'UI': rd('ui.js'),
+         'TUTDATA': rd('tutorials.js'), 'TUTORIAL': rd('tutorial.js')}
 parts = {k: (v if k == 'CSS' else js_ascii(v)) for k, v in parts.items()}
 # model.js uses require() under Node only; the browser branch needs no change.
 for k, v in parts.items():

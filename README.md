@@ -34,9 +34,12 @@ Earthmove is one of the browser-based planning tools from [Intelligent Planning]
 4. Change a number in the **Sections** table or the global settings and watch the results update.
 5. When you are ready, choose **Setup** to switch on the modules your job needs.
 
+New to the tool? The **Help** button in the top bar opens [step-by-step tutorials](docs/tutorials.md): a five minute Quick start, and short ones for asking a what-if question, optimising, and each of the 29 modules. They run on their own example, so your own scenario is never touched.
+
 The help files explain each part in plain English:
 
 - [Getting started](docs/getting-started.md): the screen, the five global settings, the section table and the examples
+- [Tutorials](docs/tutorials.md): the built-in step-by-step tours
 - [Modules](docs/modules.md): the four detail levels and what each of the 29 modules adds
 - [Optimiser and risk analysis](docs/optimiser-and-risk.md): finding a better plan and testing it against the weather
 - [Results, imports and exports](docs/results-and-exports.md): reading the results, CSV layouts, saving scenarios and reports
@@ -56,6 +59,7 @@ Open `dist/earthmove.html` straight from disk in any modern browser (Chrome, Edg
 
 - `src/engine.js` is the simulation, `src/model.js` holds the scenario defaults, validation and examples, `src/optimiser.js` and `src/risk.js` run in a Web Worker, and `src/ui.js` is the page.
 - `tests/run.js` is the main test suite: numbered tests, each checked against a hand calculation written in a comment. Run it with `node tests/run.js` and expect `ALL PASSED` (578 checks).
+- `src/tutorials.js` holds the tutorials as data and `src/tutorial.js` runs them. `node tests/tutorials.js` checks the data, and `tests/browser/drive_tutorial.js` plays every tutorial through in Chrome.
 - `tests/monotone.js` checks that removing a constraint never makes the optimised finish later (about 40 seconds).
 - `DECISIONS.md` records every design decision and the reasoning behind it. Read it before changing how the simulation behaves.
 

@@ -49,7 +49,8 @@
   const S = { skip: true, t: 0, playing: false, speedV: 45, zoom: 1, x0: 0, tab: 'sections', screen: 'main', last: 0, dirty: true, delta: null };
 
   function load() { try { const j = localStorage.getItem(STORE); if (j) return M.normalise(JSON.parse(j)); } catch (e) { } return null; }
-  function autosave() { try { localStorage.setItem(STORE, JSON.stringify(scn)); } catch (e) { } }
+  let SANDBOX = false; // true while a tutorial runs on its own example: nothing is written to the stored scenario
+  function autosave() { if (SANDBOX) return; try { localStorage.setItem(STORE, JSON.stringify(scn)); } catch (e) { } }
 
   // ---------- recompute ----------
   let timer = null;
@@ -73,6 +74,7 @@
     if ($('scnname') !== document.activeElement) $('scnname').value = scn.name;
     tcBuild(); tcLayout();
     renderBanner(); renderTabs(rebuildTable); updateClock(); S.dirty = true; autosave();
+    document.dispatchEvent(new CustomEvent('earthmove:recompute'));
   }
   function allMessages() {
     const out = issues.slice();
@@ -123,6 +125,7 @@
   }
   function toggleModule(m, on) {
     applyChange(() => { scn.setup.modules[m.id] = on; scn.setup.level = 'custom'; });
+    if (on) document.dispatchEvent(new CustomEvent('earthmove:module-on', { detail: { id: m.id } }));
   }
   function renderSetup() {
     const el = $('screenSetup'); el.replaceChildren();
@@ -131,7 +134,7 @@
     const cards = h('div', { class: 'cards' });
     for (const k of ['simple', 'standard', 'detailed', 'custom']) {
       const lv = MOD.LEVELS[k];
-      cards.append(h('div', { class: 'card' + (scn.setup.level === k ? ' sel' : ''), onclick: () => (k === 'custom' ? applyChange(() => (scn.setup.level = 'custom')) : setLevel(k)) },
+      cards.append(h('div', { class: 'card' + (scn.setup.level === k ? ' sel' : ''), 'data-level': k, onclick: () => (k === 'custom' ? applyChange(() => (scn.setup.level = 'custom')) : setLevel(k)) },
         h('h3', {}, lv.label), h('p', {}, lv.blurb),
         lv.ids && lv.ids.length && k !== 'detailed' ? h('p', {}, 'Includes: ' + lv.ids.join(', ')) : null));
     }
@@ -146,13 +149,13 @@
     // needs attention
     const att = [];
     MOD.list.forEach(m => { if (m.built && scn.setup.modules[m.id] && m.validate) m.validate(scn).forEach(x => att.push(x)); });
-    el.append(h('div', { class: 'group' }, h('h4', {}, 'Needs filling in'),
+    el.append(h('div', { class: 'group', id: 'setupneeds' }, h('h4', {}, 'Needs filling in'),
       att.length ? att.map(x => h('span', { class: 'msg warn' }, x.text, x.cell ? h('a', { onclick: () => focusCell(x.cell) }, 'Go to it') : null)) : h('span', { class: 'msg info' }, 'Nothing: every active module has what it needs.')));
     for (const g in MOD.GROUPS) {
       const grp = h('div', { class: 'group' }, h('h4', {}, MOD.GROUPS[g]));
       MOD.list.filter(m => m.group === g).forEach(m => {
         const inLevel = MOD.LEVELS[scn.setup.level] && MOD.LEVELS[scn.setup.level].ids && MOD.LEVELS[scn.setup.level].ids.indexOf(m.id) >= 0;
-        grp.append(h('div', { class: 'mod' },
+        grp.append(h('div', { class: 'mod', 'data-mod': m.id },
           h('input', { type: 'checkbox', checked: !!(m.built && scn.setup.modules[m.id]), disabled: !m.built, onchange: ev => toggleModule(m, ev.target.checked) }),
           h('div', { class: 'nm' }, m.id + '  ' + m.name, m.built ? null : h('span', { class: 'tag' }, 'not built yet (phase ' + m.phase + ')'), !m.built && inLevel ? h('span', { class: 'tag' }, 'in this level once built') : null),
           h('div', { class: 'ds' }, m.desc), h('div', { class: 'nd' }, 'You will need: ' + m.needs)));
@@ -408,7 +411,7 @@
     const tabs = $('tabs'); tabs.replaceChildren();
     const nMsg = allMessages().filter(m => m.level !== 'info').length;
     if (!tabsList().some(t => t[0] === S.tab)) S.tab = 'sections';
-    tabsList().forEach(([k, label]) => tabs.append(h('button', { class: S.tab === k ? 'on' : '', onclick: () => { S.tab = k; renderTabs(true); } }, label, k === 'messages' && nMsg ? h('span', { class: 'cnt' }, nMsg) : null)));
+    tabsList().forEach(([k, label]) => tabs.append(h('button', { class: S.tab === k ? 'on' : '', 'data-tab': k, onclick: () => { S.tab = k; renderTabs(true); } }, label, k === 'messages' && nMsg ? h('span', { class: 'cnt' }, nMsg) : null)));
     const body = $('tabbody');
     if (S.tab === 'sections') { if (rebuildTable || !body.firstChild || !body.querySelector('#sectable')) renderSections(); else updateChainage(); }
     else if (S.tab === 'fleet') { if (rebuildTable || !body.querySelector('#fleetpane')) renderFleet(); }
@@ -589,7 +592,7 @@
         h('td', {}, r.type === 'cut' ? 'Went to: ' + (list(r.to) || 'nowhere') : r.type === 'fill' ? 'Came from: ' + (list(r.from) || 'nowhere') : '')));
     });
     body.append(h('p', {}, h('button', { onclick: exportResults }, 'Export results CSV'), ' ', h('button', { onclick: exportLog }, 'Export movement log CSV'), ' ', h('button', { onclick: exportDaily }, 'Export daily CSV'), modOn('E4') ? [' ', h('button', { onclick: exportProgramme }, 'Export programme CSV')] : null, modOn('E7') ? [' ', h('button', { onclick: printReport }, 'Print report'), ' ', h('button', { onclick: () => setReplay(true) }, 'Replay mode')] : null),
-      h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Section', 'Type', 'Starting quantity (' + RL() + ')'].concat(modOn('E8') ? ['Earthworks starts'] : [], ['Reaches level', 'Where the soil went / came from']).map((c, i) => h('th', { class: i === 2 ? 'num' : '' }, c)))), tb)));
+      h('div', { class: 'scroll', id: 'resdates' }, h('table', {}, h('thead', {}, h('tr', {}, ['Section', 'Type', 'Starting quantity (' + RL() + ')'].concat(modOn('E8') ? ['Earthworks starts'] : [], ['Reaches level', 'Where the soil went / came from']).map((c, i) => h('th', { class: i === 2 ? 'num' : '' }, c)))), tb)));
   }
   function renderLog() {
     const body = $('tabbody'); body.replaceChildren();
@@ -919,7 +922,7 @@
       return h('div', {}, h('label', {}, label), inp);
     };
     const sel = (label, obj, key, opts, cellId) => h('div', {}, h('label', {}, label), h('select', { 'data-cell': cellId, onchange: ev => { obj[key] = ev.target.value; recompute(true); } }, opts.map(o => h('option', { value: o[0], selected: obj[key] === o[0] }, o[1]))));
-    const card = (id, title, kids) => h('div', { class: 'group' }, h('h4', {}, id + '  ' + title), kids);
+    const card = (id, title, kids) => h('div', { class: 'group', 'data-card': id }, h('h4', {}, id + '  ' + title), kids);
     if (modOn('E1')) { const b = md.E1; pane.append(card('E1', 'Cost', [
       h('div', { class: 'settings' }, fld('Lorry hire (£ per hour)', b, 'lorryRate', 'mod:E1:lorryRate'), fld('Excavator hire (£ per hour)', b, 'excavatorRate', 'mod:E1:excavatorRate'), fld('Receiving plant hire (£ per hour)', b, 'receivingRate', 'mod:E1:receivingRate'),
         fld('Fuel (£ per litre)', b, 'fuelPrice', 'mod:E1:fuelPrice'), fld('Labour (£ per plant-hour)', b, 'labourRate', 'mod:E1:labourRate'), sel('Lorries are charged for', b, 'basis', [['used', 'Busy hours only'], ['standing', 'The whole fixed fleet, every working day']], 'mod:E1:basis')),
@@ -1082,7 +1085,7 @@
       inp.addEventListener('input', () => { obj[key] = o.type === 'text' ? inp.value : inp.value === '' ? NaN : +inp.value; changed(false); });
       return h('div', {}, h('label', {}, label), inp);
     };
-    const card = (id, title, kids) => h('div', { class: 'group' }, h('h4', {}, id + '  ' + title), kids);
+    const card = (id, title, kids) => h('div', { class: 'group', 'data-card': id }, h('h4', {}, id + '  ' + title), kids);
     if (modOn('D1')) {
       const b = md.D1, MN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       pane.append(card('D1', 'Weather', [
@@ -1115,7 +1118,7 @@
       inp.addEventListener('input', () => { obj[key] = o.type === 'text' || o.type === 'date' || o.type === 'time' ? inp.value : inp.value === '' ? (o.blank ? '' : NaN) : +inp.value; changed(false); });
       return h('div', {}, h('label', {}, label), inp);
     };
-    const card = (id, title, kids) => h('div', { class: 'group' }, h('h4', {}, id + '  ' + title), kids);
+    const card = (id, title, kids) => h('div', { class: 'group', 'data-card': id }, h('h4', {}, id + '  ' + title), kids);
     const cellIn = (obj, key, cellId, type, w) => { const inp = h('input', { type: type || 'number', value: obj[key], step: 'any', 'data-cell': cellId, style: w ? 'min-width:' + w : '' }); inp.addEventListener('input', () => { obj[key] = type === 'text' || type === 'date' || type === 'time' ? inp.value : inp.value === '' ? NaN : +inp.value; changed(false); }); return h('td', {}, inp); };
     const rm = (arr, x, key, md2) => h('td', {}, h('button', { class: 'icon', title: 'Remove', onclick: () => { md2[key] = arr.filter(q => q !== x); recompute(true); } }, '✕'));
     const tbl = (heads, rows) => h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, heads.map(x => h('th', {}, x)))), h('tbody', {}, rows)));
@@ -1194,7 +1197,7 @@
       inp.addEventListener('input', () => { obj[key] = o.type === 'text' ? inp.value : inp.value === '' ? NaN : +inp.value; changed(false); });
       return h('div', {}, h('label', {}, label), inp);
     };
-    const card = (id, title, kids) => h('div', { class: 'group' }, h('h4', {}, id + '  ' + title), kids);
+    const card = (id, title, kids) => h('div', { class: 'group', 'data-card': id }, h('h4', {}, id + '  ' + title), kids);
     const cellIn = (obj, key, cellId, type, w) => { const inp = h('input', { type: type || 'number', value: obj[key], step: 'any', 'data-cell': cellId, style: w ? 'min-width:' + w : '' }); inp.addEventListener('input', () => { obj[key] = type === 'text' ? inp.value : inp.value === '' ? NaN : +inp.value; changed(false); }); return h('td', {}, inp); };
     const mats = scn.materials, tot = scn.sections.reduce((a, x) => a + (+x.lengthM || 0), 0);
     const used = id => scn.sections.some(x => x.lines.some(l => l.material === id));
@@ -1269,7 +1272,7 @@
       inp.addEventListener('input', () => { obj[key] = o.type === 'text' || o.type === 'date' ? inp.value : inp.value === '' ? NaN : +inp.value; changed(false); });
       return h('div', {}, h('label', {}, label), inp);
     };
-    const card = (id, title, kids) => h('div', { class: 'group' }, h('h4', {}, id + '  ' + title), kids);
+    const card = (id, title, kids) => h('div', { class: 'group', 'data-card': id }, h('h4', {}, id + '  ' + title), kids);
     const vary = (id, label, extra) => h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: md[id].mode === 'bySection', onchange: ev => { md[id].mode = ev.target.checked ? 'bySection' : 'site'; recompute(true); } }), ' ' + label + ' ', h('span', { class: 'hint' }, extra));
     if (modOn('B1')) pane.append(card('B1', 'Fleet size and empty return', [
       h('div', { class: 'settings' }, fld('Number of lorries on site', md.B1, 'fleet', 'mod:B1:fleet')),
@@ -1370,7 +1373,7 @@
     return rows;
   }
   function optTable(B, A) {
-    return h('table', { class: 'cmp' }, h('thead', {}, h('tr', {}, ['', 'Before', 'After', 'Change'].map((c, i) => h('th', { class: i ? 'num' : '' }, c)))),
+    return h('table', { class: 'cmp', id: 'optcmp' }, h('thead', {}, h('tr', {}, ['', 'Before', 'After', 'Change'].map((c, i) => h('th', { class: i ? 'num' : '' }, c)))),
       h('tbody', {}, optRows(B, A).map(r => h('tr', {}, h('td', {}, r[0]), h('td', { class: 'num' }, r[1]), h('td', { class: 'num' }, r[2]), h('td', { class: 'num ' + (r[3][1] || '') }, r[3][0])))));
   }
   function renderOptPanel() {
@@ -1385,13 +1388,13 @@
     }
     const status = E.planStatus(scn);
     if ((OPT.goal === 'cost' && !modOn('E1')) || (OPT.goal === 'carbon' && !modOn('E2'))) OPT.goal = 'completion';
-    const goalSel = h('select', { onchange: ev => (OPT.goal = ev.target.value) }, Object.keys(GOALS).filter(k => (k !== 'cost' || modOn('E1')) && (k !== 'carbon' || modOn('E2'))).map(k => h('option', { value: k, selected: OPT.goal === k }, GOALS[k])));
-    const effSel = h('select', { onchange: ev => (OPT.effort = ev.target.value) }, Object.keys(EFFORT).map(k => h('option', { value: k, selected: OPT.effort === k }, EFFORT[k][0])));
-    el.append(h('div', { class: 'optrow' }, h('div', {}, h('label', {}, 'Goal'), goalSel), h('div', {}, h('label', {}, 'Search time'), effSel), h('button', { class: 'primary', onclick: startOpt }, OPT.state === 'done' ? 'Run again' : 'Start')));
+    const goalSel = h('select', { id: 'optgoal', onchange: ev => (OPT.goal = ev.target.value) }, Object.keys(GOALS).filter(k => (k !== 'cost' || modOn('E1')) && (k !== 'carbon' || modOn('E2'))).map(k => h('option', { value: k, selected: OPT.goal === k }, GOALS[k])));
+    const effSel = h('select', { id: 'opteffort', onchange: ev => (OPT.effort = ev.target.value) }, Object.keys(EFFORT).map(k => h('option', { value: k, selected: OPT.effort === k }, EFFORT[k][0])));
+    el.append(h('div', { class: 'optrow' }, h('div', {}, h('label', {}, 'Goal'), goalSel), h('div', {}, h('label', {}, 'Search time'), effSel), h('button', { class: 'primary', id: 'optgo', onclick: startOpt }, OPT.state === 'done' ? 'Run again' : 'Start')));
     el.append(h('p', { class: 'hint' }, 'The search changes which source feeds which destination, in what order, and who gets priority when the daily limit bites. It never changes your inputs, and every candidate is checked by the full simulation, so hours, days, loaders, opening dates and the daily limit are always respected.'));
     if (status !== 'none') {
       el.append(h('p', {}, status === 'on' ? 'Using the optimised plan for "' + GOALS[scn.plan.goal] + '". ' : status === 'off' ? 'An optimised plan is saved but switched off. ' : 'The saved plan is out of date (inputs changed) and is not being used. ',
-        status === 'on' ? h('button', { onclick: () => { scn.plan.active = false; recompute(); renderOptPanel(); } }, 'Switch to nearest-available dispatch') : null,
+        status === 'on' ? h('button', { id: 'optoff', onclick: () => { scn.plan.active = false; recompute(); renderOptPanel(); } }, 'Switch to nearest-available dispatch') : null,
         status === 'off' ? h('button', { onclick: () => { scn.plan.active = true; recompute(); renderOptPanel(); } }, 'Switch the plan on') : null, ' ',
         h('button', { onclick: () => { scn.plan = null; recompute(); renderOptPanel(); } }, 'Remove plan')));
     }
@@ -1404,7 +1407,7 @@
       const hs = r.plan && r.plan.holds ? r.plan.holds.map(x => x.text) : [];
       if (r.improved && hs.length) el.append(h('p', { class: 'hint' }, 'This plan ' + hs.join('; ') + ', because with the constraint gone the greedy dispatch finishes later than the plan made with it.'));
       if (r.improved && r.matchesDispatch) el.append(h('p', { class: 'hint' }, 'This plan matches plain dispatch: the dispatcher would also route the soil through the stockpile. The plan writes that route down so it no longer depends on the dispatcher\'s fallback.'));
-      if (r.improved) el.append(h('p', {}, OPT.applied ? h('span', { class: 'good' }, 'This plan is now in use. ') : h('button', { class: 'primary', onclick: applyPlan }, 'Use this plan'), ' ', OPT.applied ? null : h('button', { onclick: () => { OPT.state = 'idle'; OPT.result = null; renderOptPanel(); } }, 'Discard')));
+      if (r.improved) el.append(h('p', {}, OPT.applied ? h('span', { class: 'good' }, 'This plan is now in use. ') : h('button', { class: 'primary', id: 'optuse', onclick: applyPlan }, 'Use this plan'), ' ', OPT.applied ? null : h('button', { onclick: () => { OPT.state = 'idle'; OPT.result = null; renderOptPanel(); } }, 'Discard')));
     }
   }
   function updateOptProgress() {
@@ -1480,15 +1483,15 @@
     const body = $('tabbody'); body.replaceChildren();
     const sv = scn.saved;
     body.append(h('h3', {}, 'Saved scenarios'),
-      h('p', {}, h('input', { type: 'text', id: 'savename', value: scn.name, style: 'max-width:320px' }), ' ', h('button', { onclick: saveScenario }, 'Save the current scenario as a new entry')));
+      h('p', {}, h('input', { type: 'text', id: 'savename', value: scn.name, style: 'max-width:320px' }), ' ', h('button', { id: 'savebtn', onclick: saveScenario }, 'Save the current scenario as a new entry')));
     if (!sv.length) body.append(h('p', { class: 'hint' }, 'Nothing saved yet. Save a scenario, change something (switch a module on, optimise, alter a date), then compare the two side by side below.'));
     else body.append(h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Name', 'Saved', ''].map(c => h('th', {}, c)))),
       h('tbody', {}, sv.map(x => h('tr', {}, h('td', {}, x.name), h('td', {}, new Date(x.savedAt).toLocaleString('en-GB')),
         h('td', { style: 'white-space:nowrap' }, h('button', { onclick: () => loadSaved(x) }, 'Load'), ' ', h('button', { onclick: () => { scn.saved = scn.saved.filter(y => y !== x); if (CMP.a === x.id) CMP.a = 'cur'; if (CMP.b === x.id) CMP.b = 'cur'; autosave(); renderTabs(true); } }, 'Delete'))))))));
     const opt = sel => [h('option', { value: 'cur', selected: sel === 'cur' }, 'Current (live)')].concat(sv.map(x => h('option', { value: x.id, selected: sel === x.id }, x.name)));
     body.append(h('h3', {}, 'Compare two'),
-      h('div', { class: 'optrow' }, h('div', {}, h('label', {}, 'A'), h('select', { onchange: ev => { CMP.a = ev.target.value; renderScenarios(); } }, opt(CMP.a))),
-        h('div', {}, h('label', {}, 'B'), h('select', { onchange: ev => { CMP.b = ev.target.value; renderScenarios(); } }, opt(CMP.b)))));
+      h('div', { class: 'optrow' }, h('div', {}, h('label', {}, 'A'), h('select', { id: 'cmpA', onchange: ev => { CMP.a = ev.target.value; renderScenarios(); } }, opt(CMP.a))),
+        h('div', {}, h('label', {}, 'B'), h('select', { id: 'cmpB', onchange: ev => { CMP.b = ev.target.value; renderScenarios(); } }, opt(CMP.b)))));
     const get = id => { if (id === 'cur') return scenStats(scn); const x = sv.find(y => y.id === id); return x ? scenStats(x.scenario) : null; };
     const A = get(CMP.a), B = get(CMP.b);
     if (!A || !B) { body.append(h('div', { class: 'note err' }, 'One of these scenarios has problems that stop it running, so it cannot be compared.')); return; }
@@ -1513,7 +1516,7 @@
     if (A.fleetSize || B.fleetSize) rows.push(['Fleet size', A.fleetSize ? fmt(A.fleetSize) : 'unlimited', B.fleetSize ? fmt(B.fleetSize) : 'unlimited', ['', '']]);
     if (A.fleetDelayMin || B.fleetDelayMin) rows.push(['Hours loading held up for a lorry', fmt(A.fleetDelayMin / 60), fmt(B.fleetDelayMin / 60), d(A.fleetDelayMin / 60, B.fleetDelayMin / 60, 0, '', true)]);
     if (A.tipWaitMin || B.tipWaitMin) rows.push(['Hours queuing to tip', fmt(A.tipWaitMin / 60), fmt(B.tipWaitMin / 60), d(A.tipWaitMin / 60, B.tipWaitMin / 60, 0, '', true)]);
-    body.append(h('div', { class: 'scroll' }, h('table', { class: 'cmp' }, h('thead', {}, h('tr', {}, ['', 'A', 'B', 'B minus A'].map((c, i) => h('th', { class: i ? 'num' : '' }, c)))),
+    body.append(h('div', { class: 'scroll' }, h('table', { class: 'cmp', id: 'cmptable' }, h('thead', {}, h('tr', {}, ['', 'A', 'B', 'B minus A'].map((c, i) => h('th', { class: i ? 'num' : '' }, c)))),
       h('tbody', {}, rows.map(r => h('tr', {}, h('td', {}, r[0]), h('td', { class: 'num' }, r[1]), h('td', { class: 'num' }, r[2]), h('td', { class: 'num ' + (r[3][1] || '') }, r[3][0])))))));
   }
 
@@ -1602,7 +1605,51 @@
     if (q.tab) { S.tab = q.tab; renderTabs(true); } if (q.screen) showScreen(q.screen);
   })();
   requestAnimationFrame(frame);
-  window.__earthmove = { buildReport, setReplay, get scn() { return scn; }, get res() { return res; }, S, recompute, setScenario, geom: () => geom(), drawTC, levelDate,
+  // ---------- tutorial hooks (used by tutorial.js; nothing here touches the model or the engine) ----------
+  function tutorialState() {
+    return { t: S.t, playing: S.playing, zoom: S.zoom, x0: S.x0, speedV: S.speedV, skip: S.skip, tab: S.tab, screen: S.screen,
+      replay: document.body.classList.contains('replay'), optOpen: OPT.open, optState: OPT.state, optApplied: OPT.applied,
+      riskState: RISK.state, riskDone: !!RISK.result, cmpA: CMP.a, cmpB: CMP.b };
+  }
+  function tutorialView() { // everything outside the scenario that a tutorial can disturb
+    return { S: { t: S.t, playing: S.playing, zoom: S.zoom, x0: S.x0, speedV: S.speedV, skip: S.skip, tab: S.tab, screen: S.screen, delta: S.delta },
+      replay: document.body.classList.contains('replay'), opt: Object.assign({}, OPT), risk: Object.assign({}, RISK), cmp: Object.assign({}, CMP) };
+  }
+  function tutorialStop() { // stop any background search a tutorial started, so it cannot report into the user's session
+    if (OPT.worker) { try { OPT.worker.terminate(); } catch (e) { } OPT.worker = null; }
+    OPT.job = null;
+    if (RISK.worker) { try { RISK.worker.terminate(); } catch (e) { } RISK.worker = null; }
+  }
+  function tutorialEnter(sc) { // load a tutorial's own example into a clean session
+    tutorialStop();
+    Object.assign(OPT, { open: false, state: 'idle', frac: 0, prog: null, result: null, applied: false, error: '' });
+    Object.assign(RISK, { state: 'idle', frac: 0, result: null, sig: '', error: '', cancelFlag: false });
+    CMP.a = 'cur'; CMP.b = 'cur';
+    setReplay(false); showScreen('main');
+    S.tab = 'sections'; S.speedV = 45; S.skip = true; $('speed').value = S.speedV; $('speedlbl').textContent = speedLabel(); $('skipIdle').checked = true;
+    setScenario(sc); renderOptPanel();
+  }
+  function tutorialRestore(v) {
+    tutorialStop();
+    const exact = (o, v2) => { Object.keys(o).forEach(k => { if (!(k in v2)) delete o[k]; }); Object.assign(o, v2); }; // back to exactly the keys and values it had
+    exact(OPT, Object.assign({}, v.opt, { worker: null, job: null })); exact(RISK, Object.assign({}, v.risk, { worker: null })); exact(CMP, v.cmp);
+    setReplay(v.replay);
+    S.zoom = v.S.zoom; S.x0 = v.S.x0; S.speedV = v.S.speedV; S.skip = v.S.skip; S.delta = v.S.delta; S.tab = v.S.tab;
+    $('speed').value = S.speedV; $('speedlbl').textContent = speedLabel(); $('skipIdle').checked = S.skip;
+    showScreen(v.S.screen); renderTabs(true); renderOptPanel();
+    S.t = Math.min(v.S.t, endT); setPlaying(!!v.S.playing); updateClock(); tcLayout(); S.dirty = true;
+  }
+  function tutorialEnsure(ids) { // switch modules on (never off) so a step can be shown or resumed
+    let ch = false; ids.forEach(id => { if (MOD.byId[id] && !scn.setup.modules[id]) { scn.setup.modules[id] = true; ch = true; } });
+    if (ch) { scn.setup.level = 'custom'; recompute(true); if (S.screen === 'setup') renderSetup(); }
+  }
+  const tutorialApi = {
+    sandbox: on => { SANDBOX = !!on; }, state: tutorialState, view: tutorialView, enter: tutorialEnter, restore: tutorialRestore, ensure: tutorialEnsure,
+    showScreen: n => showScreen(n), setTab: k => { S.tab = k; renderTabs(true); }, openOpt: on => { OPT.open = !!on; renderOptPanel(); },
+    tcExpand: () => { const st = tcSt(); if (st.minimised) { st.minimised = false; tcLayout(); } },
+    tabKeys: () => tabsList().map(t => t[0]), busy: () => OPT.state === 'running' || RISK.state === 'running'
+  };
+  window.__earthmove = { tutorial: tutorialApi, buildReport, setReplay, get scn() { return scn; }, get res() { return res; }, S, recompute, setScenario, geom: () => geom(), drawTC, levelDate,
     tc: () => { const e = tcEnv(); return { win: e.win, data: TC.data, down: e.st.timeDown, y: d => e.tg.dayToY(d), day: y => e.tg.yToDay(y), pt: e.tg.pt, pb: e.tg.pb }; },
     tcSkip: sk => { TC.skip = sk; }, tcProf: () => { TC.prof = true; TC.layer = null; drawTC(); drawTC(); TC.layer = null; drawTC(); return { stages: TC.profOut, draw: TC.profDraw }; }, tcPng: () => { drawTC(); return $('tcchart').toDataURL('image/png'); } };
 })();

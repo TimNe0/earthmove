@@ -12,7 +12,7 @@ The scheme is a row of sections laid end to end, west to east. Each section eith
 
 ![The main screen](images/road-view.png)
 
-**Top bar.** The scenario name (click to rename it), a line saying which modules are on and whether the plan is optimised, the theme switch (light, dark or automatic), **Setup** to choose the level of detail, the **Examples** menu, and **Save scenario** / **Load scenario**.
+**Top bar.** The scenario name (click to rename it), a line saying which modules are on and whether the plan is optimised, the theme switch (light, dark or automatic), **Help** for the [step-by-step tutorials](tutorials.md), **Setup** to choose the level of detail, the **Examples** menu, and **Save scenario** / **Load scenario**.
 
 **Play bar.** The simulation clock and day number, then:
 
@@ -97,5 +97,7 @@ You can open the tool at a particular point by adding options to the end of its 
 | `t=22140` | Jump to that many minutes after the start (22140 is 09:00 on day 16) |
 | `theme=dark` (or `light`, `auto`) | Choose the colour theme |
 | `replay=1` | Open in replay mode for a meeting (see [Results and exports](results-and-exports.md)) |
+
+New to all this? The [tutorials](tutorials.md) walk you through it on a built-in example.
 
 Next: [choose the level of detail with modules](modules.md).

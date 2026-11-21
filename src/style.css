@@ -126,7 +126,7 @@ td.acc .chk{display:inline-block;margin-right:8px;font-size:12px;white-space:now
 .hist i.p80{background:var(--err);opacity:1}
 
 /* reporting (E7): replay mode hides the editing controls; printing shows only the report */
-.replay #tabpanel,.replay #tabs,.replay #tabbody,.replay #btnSetup,.replay #selExample,.replay #btnSave,.replay #btnLoad,.replay #btnReplay,.replay #bOpt,.replay #scnname,.replay #optpanel{display:none!important}
+.replay #btnHelp,.replay #tabpanel,.replay #tabs,.replay #tabbody,.replay #btnSetup,.replay #selExample,.replay #btnSave,.replay #btnLoad,.replay #btnReplay,.replay #bOpt,.replay #scnname,.replay #optpanel{display:none!important}
 #replayExit{position:fixed;right:12px;bottom:12px;z-index:50;background:var(--accent);color:#fff;border:0;border-radius:6px;padding:8px 14px;opacity:.85}
 #report{display:none}
 #report table.rep{border-collapse:collapse;width:100%;margin:6px 0}
@@ -142,3 +142,33 @@ td.acc .chk{display:inline-block;margin-right:8px;font-size:12px;white-space:now
 input.dflt{background:rgba(183,121,31,.14);border-color:var(--warn)}
 .dtag{margin-left:6px;font-size:11px;color:var(--warn);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
 .ratenote a{cursor:pointer;text-decoration:underline}
+
+/* tutorials (tutorial.js): a dimmed page with one spotlighted part, and a small card beside it */
+#tutroot{position:fixed;left:0;top:0;width:0;height:0;z-index:60}
+.tut-shade{position:fixed;background:rgba(12,10,6,.64);z-index:60}
+.tut-ring{position:fixed;z-index:61;pointer-events:none;border:3px solid var(--accent);border-radius:8px;box-shadow:0 0 0 2px rgba(255,255,255,.35)}
+.tut-card,.tut-offer,.tut-toast,#helpmenu{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+.tut-card{position:fixed;z-index:62;width:340px;max-width:calc(100vw - 24px);padding:12px 16px 14px}
+.tut-card h3{margin:6px 0 4px;font-size:16px}
+.tut-card p{margin:6px 0}
+.tut-meta{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:var(--mute)}
+.tut-bar{height:3px;background:var(--line);border-radius:2px;margin-top:4px;overflow:hidden}
+.tut-bar i{display:block;height:100%;background:var(--accent)}
+.tut-try{background:var(--sky);border-radius:6px;padding:6px 8px}
+.tut-ok{color:var(--ok);font-weight:600}
+.tut-btns{display:flex;gap:8px;margin-top:10px}
+.tut-btns .tut-exit{margin-left:auto}
+.tut-offer{position:fixed;z-index:55;right:14px;bottom:14px;width:320px;max-width:calc(100vw - 28px);padding:12px 16px}
+.tut-offer p{margin:0 0 4px}
+.tut-toast{position:fixed;z-index:70;left:50%;bottom:20px;transform:translateX(-50%);padding:10px 16px;max-width:calc(100vw - 28px)}
+#helpmenu{position:fixed;z-index:70;width:328px;max-height:calc(100vh - 80px);overflow:auto;padding:6px 8px}
+#helpmenu h4{margin:8px 4px 2px}
+#helpmenu h5{margin:8px 4px 0;color:var(--mute);font-size:12px;font-weight:600}
+.tut-item{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;background:transparent;padding:5px 6px;border-radius:6px}
+.tut-item:hover{background:var(--sky)}
+.tut-item .tut-nm{flex:1}
+.tut-item small{color:var(--mute)}
+.tut-tick{width:16px;text-align:center;color:var(--ok);font-weight:700}
+.tut-resume{background:var(--sky);font-weight:600}
+.tut-note{margin:8px 4px 4px;color:var(--mute);font-size:12px}
+@media print{#tutroot,.tut-offer,.tut-toast,#helpmenu{display:none!important}}
