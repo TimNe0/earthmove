@@ -17,6 +17,7 @@ Known limits and open items are in `MORNING_REPORT.md`; every design decision wi
 - `src/model.js` scenario defaults, `normalise`, validation (`moduleIssues`, plain-English with a cell link), examples, E4/E5/E6 pure functions.
 - `src/optimiser.js` annealing over flows; `src/risk.js` D2 runs; `src/worker.js` glue for both; `src/modules.js` the registry; `src/ui.js`, `src/index.html`, `src/style.css`.
 - `tests/run.js` hand-checked tests (numbered, each with the hand calculation in a comment); `tests/diff.js` differential test; `tests/perf.js` speed; `tests/monotone.js` (about 40 s; optimised finish with a constraint removed must be no worse; `SEED=n` varies the search); `tests/browser/*.js` Chrome scripts.
+- `README.md` and `docs/*.md` are the public help (plain UK English, no em dashes); keep them in step when behaviour or labels change. Screenshots in `docs/images/` are 1600 px wide, taken from `dist/earthmove.html` with headless Chrome (start-up hash options such as `#example=site&t=30000`).
 - `.baseline/` the pre-Phase-4 engine (made with `git archive pre-step2 src | tar -x -C .baseline/`). **Never regenerate or edit it.** `releases/` is an old page backup. Both are gitignored.
 
 ## How to run things (no Node on the host)
