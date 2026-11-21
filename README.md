@@ -34,7 +34,7 @@ Earthmove is one of the browser-based planning tools from [Intelligent Planning]
 4. Change a number in the **Sections** table or the global settings and watch the results update.
 5. When you are ready, choose **Setup** to switch on the modules your job needs.
 
-New to the tool? The **Help** button in the top bar opens [step-by-step tutorials](docs/tutorials.md): a five minute Quick start, and short ones for asking a what-if question, optimising, and each of the 29 modules. They run on their own example, so your own scenario is never touched.
+New to the tool? The **Tutorials** button in the top bar opens [step-by-step tutorials](docs/tutorials.md): a five minute Quick start, and short ones for asking a what-if question, optimising, and each of the 29 modules. They run on their own example, so your own scenario is never touched.
 
 The help files explain each part in plain English:
 

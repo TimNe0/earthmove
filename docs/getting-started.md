@@ -12,7 +12,7 @@ The scheme is a row of sections laid end to end, west to east. Each section eith
 
 ![The main screen](images/road-view.png)
 
-**Top bar.** The scenario name (click to rename it), a line saying which modules are on and whether the plan is optimised, the theme switch (light, dark or automatic), **Help** for the [step-by-step tutorials](tutorials.md), **Setup** to choose the level of detail, the **Examples** menu, and **Save scenario** / **Load scenario**.
+**Top bar.** The scenario name (click to rename it), a line saying which modules are on and whether the plan is optimised, the theme switch (light, dark or automatic), **Tutorials** for the [step-by-step tutorials](tutorials.md), **Setup** to choose the level of detail, the **Examples** menu, and **Save scenario** / **Load scenario**.
 
 **Play bar.** The simulation clock and day number, then:
 

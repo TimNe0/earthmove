@@ -51,7 +51,7 @@
     exists: 'exists:<selector> something matching is on the page'
   };
 
-  const T = []; // the list, in the order shown in the Help menu
+  const T = []; // the list, in the order shown in the Tutorials menu
 
   /* ---------------------------------------------------------------- the four guided tutorials ---- */
 
@@ -91,7 +91,7 @@
         text: 'The tabs hold everything else. Results has the headline dates and figures.',
         tryIt: 'Open the Results tab.', done: 'tabIs:results', auto: [{ click: '#tabs [data-tab="results"]' }] },
       { target: '#resdates', title: 'Dates for every section', show: { tab: 'results' },
-        text: 'For each section: the date it reaches finished level, and where its soil went or came from. Overall completion at the top is the date the last section is done. You can find every other tutorial in the Help menu.' }
+        text: 'For each section: the date it reaches finished level, and where its soil went or came from. Overall completion at the top is the date the last section is done. You can find every other tutorial in the Tutorials menu.' }
     ]
   });
 
@@ -178,7 +178,7 @@
       { target: '#sectable', title: 'New columns', show: { tab: 'sections' }, ensure: ['B3'],
         text: 'With Vary by section ticked, the section table gains columns for a speed limit and gradient factors, one set for each section.' },
       { target: null, title: 'That is the tour',
-        text: 'Every module has its own short tutorial. Open the Help menu to see them all. Each is also offered the first time you switch that module on.' }
+        text: 'Every module has its own short tutorial. Open the Tutorials menu to see them all. Each is also offered the first time you switch that module on.' }
     ]
   });
 

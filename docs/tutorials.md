@@ -6,7 +6,7 @@ Earthmove has step-by-step tutorials built in. Each one dims the page, spotlight
 
 ## Opening a tutorial
 
-The first time you open the tool, it offers the Quick start. Choose **No thanks** and it will not offer it again. You can start any tutorial at any time from the **Help** button in the top bar. A tick shows the ones you have finished.
+The first time you open the tool, it offers the Quick start. Choose **No thanks** and it will not offer it again. You can start any tutorial at any time from the **Tutorials** button in the top bar. A tick shows the ones you have finished, and you can run any of them again as often as you like. **Reset tutorial progress** at the bottom of the menu clears the ticks and brings the Quick start offer back.
 
 On the card, **Back**, **Next** and **Exit** do what they say. The left and right arrow keys step back and forward, and Escape exits. The card shows how far through you are, for example "Step 3 of 13".
 
@@ -14,7 +14,7 @@ On the card, **Back**, **Next** and **Exit** do what they say. The left and righ
 
 A tutorial runs on its own built-in example, not on your scenario. While it runs, nothing is written to your saved scenario, and when you finish or exit, your scenario, your saved comparisons and your view (the tab, zoom, position in time and speed) are put back exactly as they were.
 
-You can leave at any step. If you close the page part-way, your scenario is unchanged, and the Help menu offers **Carry on** from the step where you stopped.
+You can leave at any step. If you close the page part-way, your scenario is unchanged, and the Tutorials menu offers **Carry on** from the step where you stopped.
 
 Tutorials are not available in replay mode.
 
@@ -27,7 +27,7 @@ Tutorials are not available in replay mode.
 | **Optimising** | 4 minutes | Run the optimiser, read the before and after table, and learn what "Simple dispatch, not optimised" means |
 | **Going further** | 4 minutes | The setup screen, the levels, switching a module on and off, and "vary by section" |
 
-There is also a short tutorial (three to five steps) for each of the 29 [optional modules](modules.md), listed under **Optional modules** in the Help menu. The first time you switch one module on, Earthmove offers to show you how it works. The tutorials for the **Mass haul diagram** (E3) and the **Time-chainage chart** (E8) are good ones to start with.
+There is also a short tutorial (three to five steps) for each of the 29 [optional modules](modules.md), listed under **Optional modules** in the Tutorials menu. The first time you switch one module on, Earthmove offers to show you how it works. The tutorials for the **Mass haul diagram** (E3) and the **Time-chainage chart** (E8) are good ones to start with.
 
 ## Changing the tutorials
 

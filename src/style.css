@@ -171,4 +171,5 @@ input.dflt{background:rgba(183,121,31,.14);border-color:var(--warn)}
 .tut-tick{width:16px;text-align:center;color:var(--ok);font-weight:700}
 .tut-resume{background:var(--sky);font-weight:600}
 .tut-note{margin:8px 4px 4px;color:var(--mute);font-size:12px}
+.tut-reset{margin:2px 4px 6px;font-size:12px}
 @media print{#tutroot,.tut-offer,.tut-toast,#helpmenu{display:none!important}}

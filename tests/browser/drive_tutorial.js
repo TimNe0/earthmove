@@ -1,5 +1,5 @@
 /* Tutorials end to end in a real page: every tutorial run start to finish, the user's own scenario left exactly as it was,
- * the first-visit and module offers, the Help menu, keys, replay mode, and a step whose target is missing.
+ * the first-visit and module offers, the Tutorials menu, keys, replay mode, and a step whose target is missing.
  * Runs against Chrome on 127.0.0.1:9222 with the `ws` package (the same set-up as the other drivers in this folder).
  * usage: node drive_tutorial.js <url-of-earthmove.html> [tutorial-id ...]     (ids limit the run-through; the other checks always run) */
 const WebSocket = require('ws'), http = require('http');
@@ -122,7 +122,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('closing the page during a tutorial leaves my stored scenario unchanged', rawAfterReload === keep.raw);
   check('the page remembers where I stopped', await ev('JSON.stringify(Tutorial.api.record().resume)') === '{"id":"quick","step":4}');
   await ev('document.getElementById("btnHelp").click(); 1'); await sleep(200);
-  check('the Help menu offers to carry on from that step', await ev('(document.querySelector(".tut-resume .tut-nm") || {}).textContent') === 'Carry on: Quick start (step 5 of 13)');
+  check('the Tutorials menu offers to carry on from that step', await ev('(document.querySelector(".tut-resume .tut-nm") || {}).textContent') === 'Carry on: Quick start (step 5 of 13)');
   await ev('document.querySelector(".tut-resume").click(); 1'); await sleep(900);
   check('carrying on resumes at step 5', await ev('Tutorial.api.active() && Tutorial.api.active().idx') === 4);
   await key('Escape'); await sleep(500);
@@ -151,14 +151,14 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev('document.querySelector("#screenSetup [data-level=detailed]").click(); 1'); await sleep(600);
   check('a level that switches on many modules at once offers nothing', await ev('!document.querySelector(".tut-offer")'));
 
-  // ---- 5. the Help menu, the keys, a missing target ----
+  // ---- 5. the Tutorials menu, the keys, a missing target ----
   await load('#example=simple', true);
   await ev('document.getElementById("btnHelp").click(); 1'); await sleep(200);
   const menuIds = await ev('[...document.querySelectorAll("#helpmenu .tut-item[data-tut]")].map(b => b.dataset.tut).filter(x => x !== "resume")');
-  check('the Help menu lists every tutorial (' + ids.length + ')', ids.every(x => menuIds.includes(x)) && menuIds.length === ids.length);
+  check('the Tutorials menu lists every tutorial (' + ids.length + ')', ids.every(x => menuIds.includes(x)) && menuIds.length === ids.length);
   await ev('document.getElementById("btnSetup").click(); 1'); await sleep(200);
   const rows = await ev('[...document.querySelectorAll("#screenSetup [data-mod]")].map(r => r.dataset.mod)');
-  check('every module row on the Setup screen has a tutorial in the Help menu (' + rows.length + ' rows)', rows.length === 29 && rows.every(m => menuIds.includes('mod-' + m)));
+  check('every module row on the Setup screen has a tutorial in the Tutorials menu (' + rows.length + ' rows)', rows.length === 29 && rows.every(m => menuIds.includes('mod-' + m)));
   await ev('document.getElementById("btnSetup").click(); document.getElementById("helpmenu") && document.getElementById("helpmenu").remove(); 1');
   await ev('Tutorial.api.start("quick"); 1'); await sleep(500);
   await key('ArrowRight'); await sleep(200);
@@ -175,9 +175,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('a step whose target is gone is skipped, with a warning in the console', (await ev('Tutorial.api.active().step.title')) === 'The daily chart' && warns.length === w0 + 1 && /Daily movements|#counter/.test(warns[warns.length - 1]), warns.slice(w0).join('|'));
   await ev('Tutorial.api.exit(); 1'); await sleep(400);
 
+  await ev('document.getElementById("btnHelp").click(); 1'); await sleep(200);
+  check('a finished tutorial can be started again from the menu', await ev('(async () => { const T = Tutorial.api; T.start("mod-B1"); await new Promise(r => setTimeout(r, 300)); T.next(); T.exit(); T.start("mod-B1"); await new Promise(r => setTimeout(r, 300)); const ok = T.active() && T.active().id === "mod-B1"; T.exit(); return ok; })()'));
+  await ev('Tutorial.api.openMenu(); 1'); await sleep(200);
+  await ev('document.querySelector(".tut-reset").click(); 1'); await sleep(300);
+  check('"Reset tutorial progress" clears the ticks, the declined flag and the offers', await ev('JSON.stringify(Tutorial.api.record())') === '{"declined":false,"firstOffered":false,"done":{},"resume":null,"offered":{}}');
+
   // ---- 6. replay mode ----
   await load('#replay=1', true); await sleep(800);
-  check('replay mode: the Help button is hidden', await ev('getComputedStyle(document.getElementById("btnHelp")).display') === 'none');
+  check('replay mode: the Tutorials button is hidden', await ev('getComputedStyle(document.getElementById("btnHelp")).display') === 'none');
   check('replay mode: a tutorial refuses to start', (await ev('Tutorial.api.start("quick")')) === false && (await ev('Tutorial.api.active()')) === null);
   check('replay mode: nothing is offered', await ev('!document.querySelector(".tut-offer")'));
 

@@ -239,7 +239,7 @@
       const A = teardown();
       if (finished) { rec.done[A.tut.id] = true; rec.resume = null; } else if (A.idx === 0) rec.resume = null;
       save();
-      toast(finished ? 'Tutorial finished. Your own scenario is back as you left it.' : 'Tutorial closed. Your own scenario is back as you left it. You can carry on from the Help menu.');
+      toast(finished ? 'Tutorial finished. Your own scenario is back as you left it.' : 'Tutorial closed. Your own scenario is back as you left it. You can carry on from the Tutorials menu.');
     }
     function finish() { exit(true); }
 
@@ -257,7 +257,7 @@
       doc.body.append(offerEl);
     }
 
-    // ---------- the Help menu ----------
+    // ---------- the Tutorials menu ----------
     function closeMenu() { if (menu) menu.remove(); menu = null; }
     function item(t) {
       return h('button', { class: 'tut-item', 'data-tut': t.id, onclick: () => start(t.id) },
@@ -271,7 +271,8 @@
       const G = (window.Modules && window.Modules.GROUPS) || {};
       kids.push(h('h4', {}, 'Optional modules'));
       Object.keys(G).forEach(g => { kids.push(h('h5', {}, G[g])); kids.push(T.list.filter(t => t.module && t.module[0] === g).map(item)); });
-      kids.push(h('p', { class: 'tut-note' }, 'Tutorials run on their own example. Your scenario is never changed.'));
+      kids.push(h('p', { class: 'tut-note' }, 'Tutorials run on their own example. Your scenario is never changed. You can run any of them again, as often as you like.'),
+        h('button', { class: 'tut-reset', title: 'Clear the ticks, and offer the Quick start and each module tour again', onclick: () => { rec = emptyRecord(); save(); closeMenu(); toast('Tutorial progress cleared. The Quick start will be offered again next time you open the tool.'); } }, 'Reset tutorial progress'));
       menu = h('div', { id: 'helpmenu', role: 'menu' }, kids);
       const b = doc.getElementById('btnHelp').getBoundingClientRect();
       menu.style.top = Math.round(b.bottom + 4) + 'px'; menu.style.left = Math.round(Math.max(8, Math.min(window.innerWidth - 336, b.left))) + 'px';
